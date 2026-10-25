@@ -28,10 +28,36 @@ The point it makes: a model that *returns a typed choice* instead of *generating
   - Cloudflare reports a model latency of about 39 ms median and 122 ms p95. Network time is extra.
   - Requesty lists it as **served from the US only**, so users outside the US pay the transatlantic round trip.
   - Requesty's decisions docs list `cloudflare/clef` but not `clef-flash` explicitly. The model page says it's the same kind of model. If it fails, the first test call will show the error.
-- Other decision models on Requesty, usable by changing the model field:
-  - `typesafe/jev-latest` (default): Requesty measured about 75 ms median for the latest week and 116 ms from the US. Expect about 220–240 ms from Europe or Asia Pacific, because Jev is hosted only on the US West Coast.
-  - `cloudflare/clef`: 27B, about 209 ms median by Cloudflare's own figures.
-  - `perplexity/pplx-decider-v1-27b`: no published latency.
+- `typesafe/jev-latest` (default): Requesty measured about 75 ms median for the latest week and 116 ms from the US. Expect about 220–240 ms from Europe or Asia Pacific, because Jev is hosted only on the US West Coast. `jev-latest` is not in Requesty's model list but works, probably as an alias for the newest Jev.
+- `cloudflare/clef`: 27B, about 209 ms median by Cloudflare's own figures.
+- **Decision models on Requesty** (from the public `GET /v1/models`, Oct 2026; output is free on all). These are offered as suggestions in the Model field:
+
+  | Model | $/1M in | Region | Images | Open weights |
+  |---|---|---|---|---|
+  | `typesafe/jev-1.14.0`, `typesafe/jev-1.13.0` | 0.042 | global | – | – |
+  | `cloudflare/clef-flash` (9B) | 0.09 | global | ✓ | ✓ |
+  | `cloudflare/clef` (27B) | 0.24 | global | ✓ | ✓ |
+  | `melious/clef-flash`, `melious/clef` | 0.09 / 0.24 | EU | – | ✓ |
+  | `sference/clef` | 0.24 | EU | ✓ | ✓ |
+  | `perplexity/pplx-decider-v1-27b` | 0.04 | global | – | – |
+  | `azure/decision-1` (Microsoft, 9B) | 0.042 | US | – | – |
+  | `azure/decision-1@francecentral`, `@swedencentral` | 0.042 | EU | – | – |
+
+  Only Jev, clef-flash and clef have been tested in BOOLS so far.
+
+### Test results (Oct 2026, from Europe via Requesty)
+
+12 random falling-ball states per model, raw state only:
+
+| Model | Exact zone | Aim within paddle reach | Latency |
+|---|---|---|---|
+| clef-flash | 2/12 | 4/12 | ~700 ms |
+| clef | 3/12 | 5/12 | ~650 ms |
+| jev-latest | 8–9/12 | 8/12 | ~200–390 ms |
+
+- None of them reliably works out wall bounces. Jev is clearly the best.
+- In a live game, clef-flash was about 53% exact, p50 412 ms, p95 1.25 s. Jev plays noticeably better.
+- When the exact crossing x was given to the model, every model scored 12/12. That makes the task trivial, so it was dropped: the game sends only the raw state.
 - Other places to find decision models, which users can enter themselves:
   - OpenRouter (Jev 1.13 and 1.14).
   - Cloudflare Workers AI (Clef).
@@ -73,7 +99,11 @@ instructions.md               # this document
 ```
 
 - **Deploy:** manual only. Run the GitHub Action from **Actions → Deploy → Run workflow**; it runs `wrangler deploy`. Pushes don't deploy.
-  - It needs two secrets in the GitHub environment `prod`: `CLOUDFLARE_API_TOKEN` (Edit Cloudflare Workers template, limited to the account and the `iteratory.com` zone) and `CLOUDFLARE_ACCOUNT_ID`.
+- **One-time setup** (values never go in the repo):
+  1. Cloudflare API token: *Edit Cloudflare Workers* template, limited to the account and the `iteratory.com` zone.
+  2. GitHub → Settings → Environments → `prod`, limited to branch `main`, with secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (the 32-character ID in the dashboard URL).
+  3. No Worker has to be created by hand; the first deploy creates it. Don't also connect the repo in the Cloudflare dashboard, or deploys run twice.
+- The workflow pins `wranglerVersion: "4"`. The action's default (3.x) fails with "Missing entry-point" on an assets-only Worker.
 - The site is served at `https://bools.iteratory.com` and at `bools.<account>.workers.dev`. Wrangler creates the DNS record and certificate.
 - To run locally, run `npx wrangler dev` or open `public/index.html` from any static server.
 - There are no npm dependencies.
@@ -86,7 +116,7 @@ The setup screen is shown first. **The game stays hidden until a test call succe
 |---|---|---|
 | **API URL** | `https://router.requesty.ai/v1` | Base URL. Must start with `https://` or `http://`. Requesty or any compatible provider. |
 | **API key** | (empty) | Password field with a **Show** toggle. `autocomplete="off"`. |
-| **Model** | `typesafe/jev-latest` | Needed because every request names a model, and model IDs differ between providers. |
+| **Model** | `typesafe/jev-latest` | Free text. When the URL is Requesty's, it suggests the decision models from section 2 (`<datalist>`). |
 | **Style** | OpenAI-compatible | Dropdown, described below. |
 
 **Style options:**
@@ -108,14 +138,14 @@ The setup screen is shown first. **The game stays hidden until a test call succe
 - Classic Breakout on a `<canvas>`, using a `requestAnimationFrame` loop at about 60 fps.
 - The playfield is **480 px wide**, with a paddle, ball, bricks, score and lives.
 - **There is no keyboard or mouse control of the paddle.** The model plays.
-- **Ball speed is tuned for network latency.** The ball must be slow enough that a decision arriving 100–300 ms late can still be reached. Speed should be a single constant that is easy to tweak.
+- **Ball speed is tuned for network latency:** `BALL_SPEED = 180` px/s, `PADDLE_SPEED = 360` px/s. Paddle 70 px wide at y = 440.
 - **Zones:** the paddle row is split into **8 zones of 60 px** (`z0` to `z7`).
 
 ### Decision loop
 
 - **Only one request is in flight at a time.**
   - As soon as an answer arrives, the next request is sent with the current state.
-  - The rate is therefore set by latency: about 3–10 decisions per second.
+  - The rate is therefore set by latency: about 2–5 decisions per second.
 - **Requests are sent only while the ball is falling.** Answers that arrive after the ball has turned around are ignored.
 - **Between answers, the paddle keeps sliding** toward its aim at a fixed paddle speed. The aim is the probability-weighted centre of the chosen zone and its two neighbours, so when the model is torn between neighbouring zones the paddle sits between them.
 - **The game never predicts the ball itself.** All paddle movement comes from the model.
@@ -123,8 +153,8 @@ The setup screen is shown first. **The game stays hidden until a test call succe
   - The paddle holds its last target.
   - The error is shown in the HUD.
   - The loop waits 1 s, or the `Retry-After` value, before retrying.
-- The loop pauses while the tab is hidden and after game over.
   - Nothing crashes.
+- The loop pauses while the tab is hidden and after game over.
 
 ### HUD (on-screen stats)
 
@@ -221,13 +251,17 @@ Keep it minimal. There is no framework and no build step.
 - `buildRequest(style, cfg, state)`: returns `{url, init}` for `fetch`.
 - `readAnswer(style, json)`: returns `{choice, confidence, probabilities}` or throws.
 - `decide(state)`: `fetch` with a timeout through `AbortController`. It times the call and updates the HUD.
+- `makeState()`: the rounded state that is sent. Ball, paddle and field only, nothing precomputed.
+- `aimX(answer)`: the paddle target, weighted over the chosen zone and its neighbours.
+- `record()` / `score(x)`: speed stats when an answer arrives; accuracy when the ball crosses the paddle row.
 - `step()` / `draw()`: game physics and rendering.
-- **Self-check:** opening `index.html?test` runs `console.assert` checks on `buildRequest` and `readAnswer` against the sample payloads above, and prints PASS or FAIL. There is no test framework.
+- **Self-check:** opening `index.html?test` runs `console.assert` checks on requests, answers, aiming and grading, and prints PASS or FAIL. There is no test framework.
+- **Local testing:** if you use a static server, turn caching off (e.g. `npx http-server public -c-1`), or the browser keeps running old code.
 
 ## 8. Cost
 
-- One decision is about 300 input tokens.
-- At 5 decisions per second that is about 5.4M tokens per hour. That costs about **$0.49 per hour** on clef-flash or about **$0.23 per hour** on Jev.
+- One decision is about 370–400 input tokens (measured).
+- Requests go out only while the ball falls, at 2–5 per second, so roughly 2–4M tokens per hour of play. That's about **$0.10–0.20 per hour** on Jev, or **$0.20–0.35 per hour** on clef-flash.
 - Output tokens are free on all of these models.
 
 ## 9. Security & privacy
@@ -247,6 +281,8 @@ Keep it minimal. There is no framework and no build step.
 | Side-by-side race of two models | If a speed comparison becomes the demo's focus. |
 | Self-hosted local model (Laya or d1-3B) | For an offline or zero-cost version. |
 | Any backend or proxy | Only if a provider blocks CORS that we really want to support. |
+| Fetching the Requesty model list live (the suggestions are hard-coded) | If Requesty adds decision models often. |
+| A committed script to benchmark models on fixed states | When comparing the untested models (Azure Decision-1, EU-hosted Clef, Perplexity). |
 
 ## 11. Name
 
