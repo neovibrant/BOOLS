@@ -56,8 +56,38 @@ The point it makes: a model that *returns a typed choice* instead of *generating
 | jev-latest | 8–9/12 | 8/12 | ~200–390 ms |
 
 - None of them reliably works out wall bounces. Jev is clearly the best.
+- 12 states turned out to be too few: Jev's 8–9/12 was luck. On 60 states it's about one in three exact (see "Prompt tuning" below).
 - In a live game, clef-flash was about 53% exact, p50 412 ms, p95 1.25 s. Jev plays noticeably better.
 - When the exact crossing x was given to the model, every model scored 12/12. That makes the task trivial, so it was dropped: the game sends only the raw state.
+
+### Prompt tuning (Oct 2026, Jev via Requesty)
+
+**Rule:** the game may add facts and clearer questions, but never pre-computed hints (slope, time to impact, predicted crossing).
+
+**Method:** a local benchmark script (not committed) ran 60 seeded falling-ball states per prompt version.
+- Truth was computed only inside the script.
+- It used the same paddle aiming as the game, and reports exact zone, ±1 zone, and aim within paddle reach.
+- Run-to-run noise was about ±3 points.
+- Two sets of states: **all heights** (ball 30–280 px above the paddle, half needing a wall bounce), and **near** (20–120 px above). The near set matters most, because the last answer before a catch is asked there.
+
+| Version | Change | All: exact / reach | Near: exact / reach | Tokens |
+|---|---|---|---|---|
+| v0 | original prompt | 30–33% / 40–43% | 38–40% / 55–60% | 554 |
+| v1 | ball radius + real bounce limits (x 6 and 474) | 38% / 48% | 40–42% / 60% | 583 |
+| v2 | last 3 ball positions | 32% / 45% | | 618 |
+| v3 | state as a sentence instead of JSON | 32% / 42% | | 545 |
+| v4 | zone labels ("far left…") | 32% / 42% | | 582 |
+| v5 | two worked examples (one bounce, one straight) | 37% / 45% | | 691 |
+| v6 | extra "which wall first?" question | 35% / 43% | | 646 |
+| v7 | mirror rule spelled out ("don't pick z0/z7 just because it's heading there") | 38% / 45% | | 642 |
+| v8 | mirrored ranges inside each zone label | 32% / 43% | | 975 |
+| **v9** | **v1 + v5 + v7 (in use)** | **35–37% / 45–50%** | **43–45% / 65%** | **808** |
+
+**Findings:**
+- **Jev's main mistake is choosing the wall the ball is heading toward.** It picked z0 or z7 about 43 times in 60 when the truth was z0 or z7 only 18 times. It reads direction well but not distance or the bounce.
+- **Its confidence barely separates right from wrong:** 0.21 on right answers against 0.16 on wrong ones.
+- **Only v9 helped beyond noise, and only close to the paddle:** reach went from 55–60% to 65%, and ±1 accuracy from 75–77% to 87%. Since the last answer near the paddle decides each catch, that's the one that matters, so v9 is the prompt in use. It costs about 46% more tokens per decision.
+- **Live check with v9** (Jev, about 2.5 minutes): 14 hits and 4 misses; 49% exact and 89% within ±1 zone overall; near the paddle, 13 of 24 exact and 22 of 24 within ±1; p50 236 ms.
 - Other places to find decision models, which users can enter themselves:
   - OpenRouter (Jev 1.13 and 1.14).
   - Cloudflare Workers AI (Clef).
@@ -234,14 +264,14 @@ Headers: `Authorization: Bearer {key}`, `Content-Type: application/json`
   "model": "typesafe/jev-latest",
   "messages": [
     { "role": "user",
-      "content": "{\"ball\":{\"x\":312,\"y\":140,\"vx\":90,\"vy\":120},\"paddle\":{\"x\":200,\"y\":440,\"width\":70},\"field\":{\"width\":480,\"height\":480}}" }
+      "content": "{\"ball\":{\"x\":312,\"y\":140,\"vx\":90,\"vy\":120,\"radius\":6},\"paddle\":{\"x\":200,\"y\":440,\"width\":70},\"field\":{\"width\":480,\"height\":480},\"walls\":{\"left_bounce_x\":6,\"right_bounce_x\":474}}" }
   ],
   "response_format": {
     "type": "questions",
     "questions": {
       "zone": {
         "type": "choice",
-        "instructions": "Ball x,y is its center, velocities are px per second, y grows downward. Where will the ball cross the paddle row (y = paddle.y)? Account for bounces off the left (x=0) and right (x=field.width) walls.",
+        "instructions": "Ball x,y is its center (radius 6), velocities are px per second, y grows downward. Where will the ball center cross the paddle row (y = paddle.y)? The center bounces off the walls at x=6 and x=474 (angle in = angle out). The ball never leaves the field: … [mirror rule] … Example: … [one bounce and one straight example]",
         "criteria": {
           "z0": "x 0-60", "z1": "x 60-120", "z2": "x 120-180", "z3": "x 180-240",
           "z4": "x 240-300", "z5": "x 300-360", "z6": "x 360-420", "z7": "x 420-480"
@@ -302,7 +332,8 @@ Keep it minimal. There is no framework and no build step.
 - `buildRequest(style, cfg, state)`: returns `{url, init}` for `fetch`.
 - `readAnswer(style, json)`: returns `{choice, confidence, probabilities}` or throws.
 - `decide(state)`: `fetch` with a timeout through `AbortController`. It times the call and updates the HUD.
-- `makeState()`: the rounded state that is sent. Ball, paddle and field only, nothing precomputed.
+- `QUESTION`: the paddle prompt (v9, see "Prompt tuning" in section 2). The full text is in the code.
+- `makeState()`: the rounded state that is sent: ball (with radius), paddle, field and wall bounce limits. Facts only, nothing pre-computed.
 - `aimX(answer)`: the paddle target, weighted over the chosen zone and its neighbours.
 - `record()` / `score(x)`: speed stats when an answer arrives; accuracy when the ball crosses the paddle row.
 - `step()` / `draw()`: game physics and rendering.
@@ -315,8 +346,8 @@ Keep it minimal. There is no framework and no build step.
 
 ## 8. Cost
 
-- One decision is about 370–400 input tokens (measured).
-- Requests go out only while the ball falls, at 2–5 per second, so roughly 2–4M tokens per hour of play. That's about **$0.10–0.20 per hour** on Jev, or **$0.20–0.35 per hour** on clef-flash.
+- One decision is about 800 input tokens with the v9 prompt (measured on Jev; it was about 550 before).
+- Requests go out only while the ball falls, at 2–5 per second, so roughly 4–7M tokens per hour of play. That's about **$0.15–0.30 per hour** on Jev.
 - Output tokens are free on all of these models.
 - Music: 5,000–10,000 input tokens per 20 s track (≈ $0.0002–0.0004 on Jev), only on the triggers listed in section 5. Music on the settings screen composes one track and loops it.
 

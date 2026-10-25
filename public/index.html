@@ -137,7 +137,7 @@
     <h2>Your model takes the controls.</h2>
     <p>A System One decision model reads the game state and chooses where the paddle should go. No generated text. Just a typed answer, and the next move.</p>
     <p class="how">8 zones. One choice. Every bounce.<br>You bring the API key. Jev brings the reflexes.</p>
-    <p class="note">Default: Jev via Requesty.<br>Estimated play cost: $0.10–0.20 / hour.</p>
+    <p class="note">Default: Jev via Requesty.<br>Estimated play cost: $0.15–0.30 / hour.</p>
   </aside>
   <form id="form">
     <div class="panel-title">02 / Player settings</div>
@@ -222,10 +222,16 @@ const PADDLE_W = 70, PADDLE_H = 10, PADDLE_Y = 440, R = 6;
 const TIMEOUT_MS = 5000, ERROR_BACKOFF_MS = 1000;
 const CFG_KEY = 'bools.config';
 const DEFAULTS = { url: 'https://router.requesty.ai/v1', key: '', model: 'typesafe/jev-latest', style: 'openai', music: 'arcade' };
+// Prompt "v9": the best of 10 variants in a 60-state benchmark on Jev (see instructions.md, "Prompt tuning").
 const QUESTION = {
   type: 'choice',
-  instructions: 'Ball x,y is its center, velocities are px per second, y grows downward. ' +
-    'Where will the ball cross the paddle row (y = paddle.y)? Account for bounces off the left (x=0) and right (x=field.width) walls.',
+  instructions: 'Ball x,y is its center (radius 6), velocities are px per second, y grows downward. ' +
+    'Where will the ball center cross the paddle row (y = paddle.y)? The center bounces off the walls at x=6 and x=474 (angle in = angle out).' +
+    ' The ball never leaves the field: a straight-line path that would end past x=480 is mirrored back (crossing at 960 - x), ' +
+    'and one that would end below x=0 is mirrored back (crossing at -x). So never answer z0 or z7 just because the ball is heading toward that wall; ' +
+    'first work out how far past the wall it would go, then reflect.' +
+    ' Example: ball x=400,y=240, vx=120, vy=120 travels 200 px down and 200 px right; it would reach x=600 but bounces off the right wall at 480, so it crosses at 480-(600-480)=360 (z6).' +
+    ' Example: ball x=100,y=340, vx=-60, vy=150 travels 100 px down and 40 px left, crossing at x=60 (z1) with no bounce.',
   criteria: Object.fromEntries(ZONE_IDS.map((z, i) => [z, `x ${i * ZW}-${(i + 1) * ZW}`])),
 };
 
@@ -368,9 +374,10 @@ function newDescent() { game.descent++; game.pending = []; game.crossed = false;
 // ---- decision loop: one request in flight at a time ----
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const makeState = (b, paddleX) => ({
-  ball: { x: Math.round(b.x), y: Math.round(b.y), vx: Math.round(b.vx), vy: Math.round(b.vy) },
+  ball: { x: Math.round(b.x), y: Math.round(b.y), vx: Math.round(b.vx), vy: Math.round(b.vy), radius: R },
   paddle: { x: Math.round(paddleX), y: PADDLE_Y, width: PADDLE_W },
   field: { width: W, height: H },
+  walls: { left_bounce_x: R, right_bounce_x: W - R },
 });
 const snapshot = () => makeState(game.ball, game.paddle.x);
 const SAMPLE_STATE = makeState({ x: 312, y: 140, vx: 90, vy: 120 }, 200);
@@ -809,7 +816,7 @@ if (new URLSearchParams(location.search).has('test')) {
   t(readAnswer('systemone', { model: 'jev-1.14.0', answers: ans }).confidence === 0.8, 'read systemone');
   let threw = false; try { readAnswer('openai', { choices: [{ message: { content: '{}' } }] }); } catch { threw = true; }
   t(threw, 'readAnswer throws on missing zone');
-  t(Object.keys(SAMPLE_STATE).join() === 'ball,paddle,field', 'state has no precomputed hints');
+  t(Object.keys(SAMPLE_STATE).join() === 'ball,paddle,field,walls' && !JSON.stringify(SAMPLE_STATE).match(/cross|predict|slope|time/), 'state has no precomputed hints');
   game = { pending: [], crossed: false };
   game.pending.push(record({ choice: 'z1', probabilities: { z1: 1 }, ms: 100, tokens: 0 }, 90, SAMPLE_STATE));
   score(100);
