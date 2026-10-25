@@ -209,7 +209,7 @@ The setup screen is shown first. **The game stays hidden until a test call succe
 
 - **Use a coach** checkbox on the settings screen. It's unchecked by default; checking it expands:
   - **Coach API URL** and **Coach API key**. If they're empty, the coach uses the main URL and key.
-  - **Coach model**: a normal chat LLM, required, with no suggestions.
+  - **Coach model**: a normal chat LLM, required, with no suggestions. The default is `deepinfra/google/gemma-4-26B-A4B-it:flex`.
   - **Custom header name and value** (optional): an extra auth header sent only to the coach. The server must allow it in `Access-Control-Allow-Headers`. A hosted page calling `localhost` may also need `Access-Control-Allow-Private-Network: true`.
   - The coach always uses the OpenAI-compatible `/chat/completions` format.
 - **Every fall is recorded** in `bools.prompts.descents`:
