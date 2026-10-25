@@ -102,19 +102,19 @@ The point it makes: a model that *returns a typed choice* instead of *generating
 
 ## 3. Architecture
 
-- **No backend.** The whole app is static client-side HTML/JS, hosted as **static assets on a Cloudflare Worker**.
-- The browser calls the provider API **directly** with the **user's own** URL, API key and model.
-- This means the game, the code and the link can all be shared freely, because nobody's key is embedded.
-- **Requesty allows direct browser calls (CORS).** This was verified with a preflight request to `/v1/chat/completions`, which returned:
-  - `Access-Control-Allow-Origin: *`
-  - `Access-Control-Allow-Methods: POST`
-  - `Access-Control-Allow-Headers: authorization,content-type`
+- The app is static client-side HTML/JS, hosted as **static assets on a Cloudflare Worker**.
+- The browser sends every API call, with the **user's own** URL, API key and model, to the Worker's `/proxy` (`src/worker.js`). The Worker relays it, so providers that block CORS (e.g. `api.typesafe.ai`) work.
+  - The real URL goes in the `X-Target` header. It must be `https://` and end in `/chat/completions` or `/systemone`; anything else gets a 400.
+  - Nothing is logged or stored. `host`, `origin`, `referer`, `cf-*` and `x-forwarded-*` are dropped before relaying.
+  - `index.html` uses the absolute URL `https://bools.iteratory.com/proxy`, so local runs use the deployed proxy. Worker changes need a deploy, or `wrangler dev` with `PROXY` pointed at it.
+- The game, the code and the link can be shared freely, because nobody's key is embedded.
 
 ### Files
 
 ```
 public/index.html             # the entire app: setup form, game, API client (plain JS, no build step)
-wrangler.jsonc                # static-assets Worker config
+src/worker.js                 # /proxy: relays API calls past CORS
+wrangler.jsonc                # Worker config (assets + proxy)
 .github/workflows/deploy.yml  # manual deploy (Actions → Deploy → Run workflow)
 instructions.md               # this document
 ```
@@ -163,7 +163,7 @@ The setup screen is shown first. **The game stays hidden until a test call succe
 - From the game screen you can get back to setup to change the model or provider mid-session.
 
 **Notice shown on the form:**
-> Your key is stored in this browser's localStorage and sent only to the URL above, never to this site. Anyone with access to this browser, or any script running on this page, could read it. Use a spending-limited key.
+> Your keys are stored in this browser's localStorage and sent only to the URLs above, relayed through bools.iteratory.com, which does not store or log them. Anyone with access to this browser, or any script running on this page, could read it. Use a spending-limited key.
 
 ## 5. Game
 
@@ -352,7 +352,7 @@ The response is plain JSON, with no message wrapper:
 - **Requesty's `/v1/systemone` works from the browser.** Its preflight returns `Access-Control-Allow-Origin: *`. Tested end to end in the browser: paddle p50 225 ms, about 580 tokens per decision, and 48-note music tracks in about 300 ms.
 - **Requesty's `/systemone` rejects the `typesafe/jev-latest` alias** (404 "model not found"). It accepts `typesafe/jev-1.14.0`. Picking the native style while the model is `typesafe/jev-latest` switches the model to `typesafe/jev-1.14.0`. Other Requesty models (e.g. `cloudflare/clef-flash`) work with their usual IDs.
 - **The native style uses more tokens than OpenAI-compatible:** Jev on `/systemone` reported about 550 input tokens per decision, against about 400, plus some output tokens. Output tokens are free.
-- **TypeSafe's own API (`api.typesafe.ai`) blocks browser calls.** Its preflight returns 400 with no CORS headers, so it can't be used from BOOLS without a proxy. Use Requesty, or another provider that allows CORS.
+- **TypeSafe's own API (`api.typesafe.ai`) blocks browser calls.** Its preflight returns 400 with no CORS headers. BOOLS reaches it through `/proxy`.
 - Other servers that speak this format, untested: Ollama, LM Studio, LLM Gateway, Abacus RouteLLM, and Liquid's `/decisions/v1/systemone`.
 
 ## 7. Code shape (inside `index.html`)
@@ -385,10 +385,9 @@ Keep it minimal. There is no framework and no build step.
 
 ## 9. Security & privacy
 
-- The key lives only in the user's `localStorage` and in the requests the user's browser sends to the URL they entered. The Worker never sees it.
+- The key lives in the user's `localStorage`. It passes through `/proxy` on its way to the URL they entered, and is never logged or stored there.
 - Show the notice from section 4 and recommend a spending-limited key.
-- Validate the URL scheme. Never `eval` or insert provider responses as HTML; render them with `textContent`.
-- If the user's provider doesn't allow cross-origin calls, the test call fails with a clear message: "provider blocks browser calls (CORS)".
+- URLs must be `https://` (the form and the proxy both check). Never `eval` or insert provider responses as HTML; render them with `textContent`.
 
 ## 10. Deliberately skipped (add later)
 
@@ -398,7 +397,8 @@ Keep it minimal. There is no framework and no build step.
 | A second question, e.g. a `noul` for "is the ball approaching?" | If the zone answers alone look jittery. |
 | Side-by-side race of two models | If a speed comparison becomes the demo's focus. |
 | Self-hosted local model (Laya or d1-3B) | For an offline or zero-cost version. |
-| Any backend or proxy | Only if a provider blocks CORS that we really want to support. |
+| Rate limiting on `/proxy` | If it gets abused as an open relay. |
+| Calling `http://` or local servers (Ollama, LM Studio) | The proxy can't reach them; it would need a direct-call option. |
 | Fetching the Requesty model list live (the suggestions are hard-coded) | If Requesty adds decision models often. |
 | A committed script to benchmark models on fixed states | When comparing the untested models (Azure Decision-1, EU-hosted Clef, Perplexity). |
 

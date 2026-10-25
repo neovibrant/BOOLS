@@ -195,9 +195,9 @@
       <label>Coach model <input id="coach" autocomplete="off" spellcheck="false" placeholder="a normal chat LLM"></label>
       <label>Custom header name <input id="coachHeader" autocomplete="off" spellcheck="false" placeholder="optional, e.g. X-Api-Token"></label>
       <label>Custom header value <input id="coachHeaderValue" type="password" autocomplete="off" spellcheck="false" placeholder="optional"></label>
-      <p class="note">OpenAI-compatible chat API. After every miss the coach reads every prompt tried so far, with all the catches and misses each one played, and rewrites the paddle prompt. Prompts and play history are saved in this browser. The custom header is sent only to the coach; your server must allow it in CORS.</p>
+      <p class="note">OpenAI-compatible chat API. After every miss the coach reads every prompt tried so far, with all the catches and misses each one played, and rewrites the paddle prompt. Prompts and play history are saved in this browser. The custom header is sent only to the coach.</p>
     </div>
-    <p class="note" id="key-notice">Your keys are stored in this browser's localStorage and sent only to the URLs above, never to this site.
+    <p class="note" id="key-notice">Your keys are stored in this browser's localStorage and sent only to the URLs above, relayed through bools.iteratory.com, which does not store or log them.
       Anyone with access to this browser, or any script running on this page, could read it. Use a spending-limited key.</p>
     <div class="actions"><button id="play">▶ Start game</button><button type="button" id="forget">Forget</button></div>
     <p class="note">One test decision, then your model takes over.</p>
@@ -309,11 +309,14 @@ function ask(state, questions, timeout = TIMEOUT_MS, c = cfg) {
   return post(url, init, timeout);
 }
 
+// Every call is relayed by our Worker (src/worker.js) so providers that block CORS work. Absolute URL so local runs work too.
+const PROXY = 'https://bools.iteratory.com/proxy';
+
 async function post(url, init, timeout) {
   const t0 = performance.now();
   let res;
-  try { res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeout) }); }
-  catch (e) { throw new Error(e.name === 'TimeoutError' ? `timeout after ${timeout} ms` : 'network error, or provider blocks browser calls (CORS)'); }
+  try { res = await fetch(PROXY, { ...init, headers: { ...init.headers, 'X-Target': url }, signal: AbortSignal.timeout(timeout) }); }
+  catch (e) { throw new Error(e.name === 'TimeoutError' ? `timeout after ${timeout} ms` : 'network error'); }
   const text = await res.text();
   const ms = performance.now() - t0;
   if (!res.ok) {
@@ -952,9 +955,9 @@ setInterval(updateMusicUI, 100);
 $('form').onsubmit = async e => {
   e.preventDefault();
   const c = readForm();
-  if (!/^https?:\/\/[^/]/i.test(c.url)) return msg('API URL must start with https:// or http://');
+  if (!/^https:\/\/[^/]/i.test(c.url)) return msg('API URL must start with https://');
   if (c.useCoach && !c.coach) return msg('Enter a coach model, or untick "Use a coach".');
-  if (c.useCoach && c.coachUrl && !/^https?:\/\/[^/]/i.test(c.coachUrl)) return msg('Coach API URL must start with https:// or http://');
+  if (c.useCoach && c.coachUrl && !/^https:\/\/[^/]/i.test(c.coachUrl)) return msg('Coach API URL must start with https://');
   if (c.useCoach && c.coachHeaderValue && !c.coachHeader) return msg('Enter the custom header name, or clear its value.');
   if (c.useCoach && c.coachHeader && !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(c.coachHeader)) return msg('Custom header name may only use letters, digits and - _ . etc., no spaces or colons.');
   saveConfig(c); cfg = c;
