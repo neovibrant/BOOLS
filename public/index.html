@@ -173,6 +173,7 @@
         <option value="systemone">System One native (POST /systemone)</option>
       </select>
     </label>
+    <label class="check"><input type="checkbox" id="proxy"> Use proxy (for providers that block browser calls; can't reach localhost)</label>
     <div id="musicBox" class="music-box">
       <label><span>Soundtrack, composed live by your model</span>
         <select id="music" aria-label="Soundtrack style">
@@ -195,9 +196,10 @@
       <label>Coach model <input id="coach" autocomplete="off" spellcheck="false" placeholder="a normal chat LLM"></label>
       <label>Custom header name <input id="coachHeader" autocomplete="off" spellcheck="false" placeholder="optional, e.g. X-Api-Token"></label>
       <label>Custom header value <input id="coachHeaderValue" type="password" autocomplete="off" spellcheck="false" placeholder="optional"></label>
+      <label class="check"><input type="checkbox" id="coachProxy"> Use proxy for the coach</label>
       <p class="note">OpenAI-compatible chat API. After every miss the coach reads every prompt tried so far, with all the catches and misses each one played, and rewrites the paddle prompt. Prompts and play history are saved in this browser. The custom header is sent only to the coach.</p>
     </div>
-    <p class="note" id="key-notice">Your keys are stored in this browser's localStorage and sent only to the URLs above, relayed through bools.iteratory.com, which does not store or log them.
+    <p class="note" id="key-notice">Your keys are stored in this browser's localStorage and sent only to the URLs above (relayed through bools.iteratory.com when "Use proxy" is ticked; it does not store or log them).
       Anyone with access to this browser, or any script running on this page, could read it. Use a spending-limited key.</p>
     <div class="actions"><button id="play">▶ Start game</button><button type="button" id="forget">Forget</button></div>
     <p class="note">One test decision, then your model takes over.</p>
@@ -241,7 +243,7 @@ const PADDLE_W = 70, PADDLE_H = 10, PADDLE_Y = 440, R = 6;
 const CATCH_Y = PADDLE_Y - R;   // ball centre when its bottom touches the paddle top: where a catch or miss is decided
 const TIMEOUT_MS = 5000, ERROR_BACKOFF_MS = 1000;
 const CFG_KEY = 'bools.config';
-const DEFAULTS = { url: 'https://router.requesty.ai/v1', key: '', model: 'typesafe/jev-latest', useCoach: false, coach: 'deepinfra/google/gemma-4-26B-A4B-it:flex', coachUrl: '', coachKey: '', coachHeader: '', coachHeaderValue: '', style: 'openai', music: 'arcade' };
+const DEFAULTS = { url: 'https://router.requesty.ai/v1', key: '', model: 'typesafe/jev-latest', useCoach: false, coach: 'deepinfra/google/gemma-4-26B-A4B-it:flex', coachUrl: '', coachKey: '', coachHeader: '', coachHeaderValue: '', style: 'openai', music: 'arcade', proxy: false, coachProxy: false };
 // Original prompt (v0). The tuned versions (v9, v10) scored better in the benchmark but played worse live; see instructions.md, "Prompt tuning".
 const QUESTION = {
   type: 'choice',
@@ -306,17 +308,18 @@ async function decide(state) {
 
 function ask(state, questions, timeout = TIMEOUT_MS, c = cfg) {
   const { url, init } = buildRequest(c.style, c, state, questions);
-  return post(url, init, timeout);
+  return post(url, init, timeout, c.proxy);
 }
 
-// Every call is relayed by our Worker (src/worker.js) so providers that block CORS work. Absolute URL so local runs work too.
+// Optional relay through our Worker (src/worker.js) for providers that block CORS. Absolute URL so local runs work too.
 const PROXY = 'https://bools.iteratory.com/proxy';
 
-async function post(url, init, timeout) {
+async function post(url, init, timeout, proxy) {
   const t0 = performance.now();
   let res;
-  try { res = await fetch(PROXY, { ...init, headers: { ...init.headers, 'X-Target': url }, signal: AbortSignal.timeout(timeout) }); }
-  catch (e) { throw new Error(e.name === 'TimeoutError' ? `timeout after ${timeout} ms` : 'network error'); }
+  try {
+    res = await fetch(proxy ? PROXY : url, { ...init, headers: proxy ? { ...init.headers, 'X-Target': url } : init.headers, signal: AbortSignal.timeout(timeout) });
+  } catch (e) { throw new Error(e.name === 'TimeoutError' ? `timeout after ${timeout} ms` : proxy ? 'network error' : 'network error, or provider blocks browser calls (CORS): try "Use proxy"'); }
   const text = await res.text();
   const ms = performance.now() - t0;
   if (!res.ok) {
@@ -720,13 +723,17 @@ function runCoach() {
   coach.p = coachCall();
 }
 
+function coachPost(content) {
+  const headers = { Authorization: 'Bearer ' + (cfg.coachKey || cfg.key), 'Content-Type': 'application/json' };
+  if (cfg.coachHeader) headers[cfg.coachHeader] = cfg.coachHeaderValue;
+  return post((cfg.coachUrl || cfg.url).replace(/\/+$/, '') + '/chat/completions', { method: 'POST', headers,
+    body: JSON.stringify({ model: cfg.coach, messages: [{ role: 'user', content }] }) }, COACH_TIMEOUT_MS, cfg.coachProxy);
+}
+
 async function coachCall() {
   coach.error = '';
   try {
-    const headers = { Authorization: 'Bearer ' + (cfg.coachKey || cfg.key), 'Content-Type': 'application/json' };
-    if (cfg.coachHeader) headers[cfg.coachHeader] = cfg.coachHeaderValue;
-    const r = await post((cfg.coachUrl || cfg.url).replace(/\/+$/, '') + '/chat/completions', { method: 'POST', headers,
-      body: JSON.stringify({ model: cfg.coach, messages: [{ role: 'user', content: coachPrompt() }] }) }, COACH_TIMEOUT_MS);
+    const r = await coachPost(coachPrompt());
     coach.tokens += r.tokens; coach.calls++;
     const c = parseCoach(r.json?.choices?.[0]?.message?.content || '');
     if (c.instructions) { prompts.list.push(newVersion(c.instructions, c.base, c.why)); prompts.cur = prompts.list.length - 1; }
@@ -914,11 +921,11 @@ const syncModelList = () => {
 };
 function fillForm(c) {
   for (const k of ['url', 'key', 'model', 'coach', 'coachUrl', 'coachKey', 'coachHeader', 'coachHeaderValue', 'style', 'music']) $(k).value = c[k];
-  $('useCoach').checked = c.useCoach;
+  for (const k of ['useCoach', 'proxy', 'coachProxy']) $(k).checked = !!c[k];
   music.style = $('music').value;
   syncModelList();
 }
-const readForm = () => ({ url: $('url').value.trim(), key: $('key').value.trim(), model: $('model').value.trim(), useCoach: $('useCoach').checked, coach: $('coach').value.trim(), coachUrl: $('coachUrl').value.trim(), coachKey: $('coachKey').value.trim(), coachHeader: $('coachHeader').value.trim(), coachHeaderValue: $('coachHeaderValue').value.trim(), style: $('style').value, music: $('music').value });
+const readForm = () => ({ url: $('url').value.trim(), key: $('key').value.trim(), model: $('model').value.trim(), useCoach: $('useCoach').checked, coach: $('coach').value.trim(), coachUrl: $('coachUrl').value.trim(), coachKey: $('coachKey').value.trim(), coachHeader: $('coachHeader').value.trim(), coachHeaderValue: $('coachHeaderValue').value.trim(), style: $('style').value, music: $('music').value, proxy: $('proxy').checked, coachProxy: $('coachProxy').checked });
 const msg = t => { $('setupMsg').textContent = t; };
 
 $('url').oninput = syncModelList;
@@ -927,7 +934,7 @@ $('style').onchange = e => { if (e.target.value === 'systemone' && $('model').va
 for (const id of ['url', 'key', 'model']) $(id).addEventListener('change', () => autoMusic('settings ready'));
 $('show').onchange = e => { $('key').type = $('coachKey').type = $('coachHeaderValue').type = e.target.checked ? 'text' : 'password'; };
 $('forget').onclick = () => {
-  clearConfig(); fillForm({ url: '', key: '', model: '', useCoach: false, coach: DEFAULTS.coach, coachUrl: '', coachKey: '', coachHeader: '', coachHeaderValue: '', style: DEFAULTS.style, music: DEFAULTS.music }); msg('');
+  clearConfig(); fillForm({ url: '', key: '', model: '', useCoach: false, coach: DEFAULTS.coach, coachUrl: '', coachKey: '', coachHeader: '', coachHeaderValue: '', style: DEFAULTS.style, music: DEFAULTS.music, proxy: false, coachProxy: false }); msg('');
   music.track = music.next = null;
 };
 $('settings').onclick = stop;
@@ -955,16 +962,27 @@ setInterval(updateMusicUI, 100);
 $('form').onsubmit = async e => {
   e.preventDefault();
   const c = readForm();
-  if (!/^https:\/\/[^/]/i.test(c.url)) return msg('API URL must start with https://');
+  if (!/^https?:\/\/[^/]/i.test(c.url)) return msg('API URL must start with http:// or https://');
+  if (c.proxy && !/^https:/i.test(c.url)) return msg('The proxy only relays to https:// URLs. Untick "Use proxy" or use https://.');
+  if (c.useCoach && c.coachProxy && !/^https:/i.test(c.coachUrl || c.url)) return msg('The proxy only relays to https:// URLs. Untick "Use proxy for the coach" or use https://.');
   if (c.useCoach && !c.coach) return msg('Enter a coach model, or untick "Use a coach".');
-  if (c.useCoach && c.coachUrl && !/^https:\/\/[^/]/i.test(c.coachUrl)) return msg('Coach API URL must start with https://');
+  if (c.useCoach && c.coachUrl && !/^https?:\/\/[^/]/i.test(c.coachUrl)) return msg('Coach API URL must start with http:// or https://');
   if (c.useCoach && c.coachHeaderValue && !c.coachHeader) return msg('Enter the custom header name, or clear its value.');
   if (c.useCoach && c.coachHeader && !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(c.coachHeader)) return msg('Custom header name may only use letters, digits and - _ . etc., no spaces or colons.');
   saveConfig(c); cfg = c;
   $('play').disabled = true; msg('Testing one decision call…');
   try {
     const r = await decide(SAMPLE_STATE);
-    msg(`Test OK: ${r.choice} in ${Math.round(r.ms)} ms`);
+    let ok = `Test OK: ${r.choice} in ${Math.round(r.ms)} ms`;
+    if (c.useCoach) {
+      msg(ok + '. Testing the coach…');
+      try {
+        const k = await coachPost('Reply with OK.');
+        if (!k.json?.choices?.[0]?.message?.content) throw new Error('empty reply: ' + JSON.stringify(k.json).slice(0, 200));
+        ok += `, coach OK in ${Math.round(k.ms)} ms`;
+      } catch (err) { return msg('Coach test call failed: ' + err.message); }
+    }
+    msg(ok);
     start();
   } catch (err) { msg('Test call failed: ' + err.message); }
   finally { $('play').disabled = false; }
