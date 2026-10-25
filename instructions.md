@@ -56,7 +56,7 @@ The point it makes: a model that *returns a typed choice* instead of *generating
 ```
 public/index.html   # the entire app: setup form, game, API client (plain JS, no build step)
 wrangler.jsonc      # static-assets Worker config
-bools.md            # this document
+instructions.md     # this document
 ```
 
 `wrangler.jsonc`:

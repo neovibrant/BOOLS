@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BOOLS — Break Out Of Llm Slowness</title>
+<style>
+  body { font: 14px system-ui, sans-serif; background: #111; color: #ddd; margin: 0; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  form { max-width: 480px; display: grid; gap: 10px; }
+  label { display: grid; gap: 2px; }
+  input, select, button { font: inherit; padding: 6px; background: #222; color: #eee; border: 1px solid #444; border-radius: 4px; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .5; cursor: wait; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .row input:not([type=checkbox]) { flex: 1; }
+  .note { font-size: 12px; color: #999; }
+  .err { color: #f77; white-space: pre-wrap; word-break: break-word; }
+  #game { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+  canvas { background: #000; border: 1px solid #333; max-width: 100%; display: block; }
+  #hud { width: 340px; font: 12px ui-monospace, monospace; }
+  #stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0 0 10px; }
+  #stats dt { color: #888; }
+  #stats dd { margin: 0; word-break: break-word; }
+  #bars { display: flex; gap: 2px; height: 60px; margin-bottom: 10px; }
+  #bars div { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
+  #bars i { width: 100%; background: #4af; min-height: 1px; }
+  #bars .truth i { background: #4c4; }
+  #log { white-space: pre; color: #aaa; }
+  h2 { font-size: 12px; color: #888; font-weight: normal; margin: 0 0 4px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+<section id="setup">
+  <h1>BOOLS — Break Out Of Llm Slowness</h1>
+  <p class="note">A System One decision model plays Breakout. It returns a typed choice, not text.</p>
+  <form id="form">
+    <label>API URL <input id="url" required></label>
+    <label for="key">API key</label>
+    <div class="row">
+      <input id="key" type="password" autocomplete="off" spellcheck="false">
+      <label class="row"><input type="checkbox" id="show"> Show</label>
+    </div>
+    <label>Model <input id="model" required></label>
+    <label>Style
+      <select id="style">
+        <option value="openai">OpenAI-compatible (Requesty, etc.)</option>
+        <option value="systemone" disabled>System One (Jev native) — coming soon</option>
+      </select>
+    </label>
+    <label>Input to the model
+      <select id="hint">
+        <option value="raw">Raw: ball position and velocity only</option>
+        <option value="unwalled">Helped: straight-line crossing x, model handles walls</option>
+        <option value="answer">Given: exact crossing x, model only picks the zone</option>
+      </select>
+    </label>
+    <p class="note">Your key is stored in this browser's localStorage and sent only to the URL above, never to this site.
+      Anyone with access to this browser, or any script running on this page, could read it. Use a spending-limited key.</p>
+    <div class="row"><button id="play">Play</button><button type="button" id="forget">Forget</button></div>
+    <p id="setupMsg" class="err" aria-live="polite"></p>
+  </form>
+</section>
+
+<section id="game" hidden>
+  <div>
+    <canvas id="cv" width="480" height="480" aria-label="Breakout game played by the model"></canvas>
+    <p class="note">Blue = zone the model chose · green outline = true crossing zone</p>
+    <div class="row"><button id="again" hidden>Play again</button><button id="settings">Settings</button></div>
+  </div>
+  <div id="hud" aria-live="off">
+    <dl id="stats"></dl>
+    <h2>Last answer: zone probabilities (green = truth)</h2>
+    <div id="bars"></div>
+    <h2>Recent decisions</h2>
+    <div id="log"></div>
+  </div>
+</section>
+
+<script>
+const W = 480, H = 480, ZONES = 8, ZW = W / ZONES;
+const ZONE_IDS = Array.from({ length: ZONES }, (_, i) => 'z' + i);
+const BALL_SPEED = 180;      // px/s. Tune this for network latency.
+const PADDLE_SPEED = 360;    // px/s
+const PADDLE_W = 70, PADDLE_H = 10, PADDLE_Y = 440, R = 6;
+const TIMEOUT_MS = 5000, ERROR_BACKOFF_MS = 1000;
+const CFG_KEY = 'bools.config';
+const DEFAULTS = { url: 'https://router.requesty.ai/v1', key: '', model: 'cloudflare/clef-flash', style: 'openai', hint: 'raw' };
+// How much of the maths we do for the model. Compare levels to see what it can handle.
+const HINTS = {
+  raw: 'Ball x,y is its center, velocities are px per second, y grows downward. ' +
+    'Where will the ball cross the paddle row (y = paddle.y)? Account for bounces off the left (x=0) and right (x=field.width) walls.',
+  unwalled: 'The ball moves in a straight line toward the paddle row. no_walls_x is where it would cross that row if there were no side walls. ' +
+    'Walls mirror it: if no_walls_x < 0 the crossing is -no_walls_x; if no_walls_x > field.width it is 2*field.width - no_walls_x; ' +
+    'repeat until it is inside 0..field.width. Where will the ball cross the paddle row?',
+  answer: 'crossing_x is the x where the ball will cross the paddle row. Which zone contains crossing_x?',
+};
+const QUESTION = hint => ({
+  type: 'choice',
+  instructions: HINTS[hint],
+  criteria: Object.fromEntries(ZONE_IDS.map((z, i) => [z, `x ${i * ZW}-${(i + 1) * ZW}`])),
+});
+
+// ---- config ----
+const loadConfig = () => { try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(CFG_KEY)) }; } catch { return { ...DEFAULTS }; } };
+const saveConfig = c => localStorage.setItem(CFG_KEY, JSON.stringify(c));
+const clearConfig = () => localStorage.removeItem(CFG_KEY);
+
+// ---- API ----
+function buildRequest(style, cfg, state) {
+  const base = cfg.url.replace(/\/+$/, '');
+  const questions = { zone: QUESTION(cfg.hint) };
+  const sys1 = style === 'systemone';
+  const body = sys1
+    ? { model: cfg.model, state, questions }
+    : { model: cfg.model, messages: [{ role: 'user', content: JSON.stringify(state) }], response_format: { type: 'questions', questions } };
+  return {
+    url: base + (sys1 ? '/systemone' : '/chat/completions'),
+    init: { method: 'POST', headers: { Authorization: 'Bearer ' + cfg.key, 'Content-Type': 'application/json' }, body: JSON.stringify(body) },
+  };
+}
+
+function readAnswer(style, json) {
+  let a = style === 'systemone' ? json?.answers : json?.choices?.[0]?.message?.content;
+  if (typeof a === 'string') a = JSON.parse(a);
+  a = a?.zone;
+  if (!a || !ZONE_IDS.includes(a.choice)) throw new Error('no valid zone in answer: ' + JSON.stringify(json).slice(0, 200));
+  const probabilities = a.probabilities || {};
+  return { choice: a.choice, confidence: a.confidence ?? probabilities[a.choice] ?? null, probabilities };
+}
+
+async function decide(state) {
+  const { url, init } = buildRequest(cfg.style, cfg, state);
+  const t0 = performance.now();
+  let res;
+  try { res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) }); }
+  catch (e) { throw new Error(e.name === 'TimeoutError' ? `timeout after ${TIMEOUT_MS} ms` : 'network error, or provider blocks browser calls (CORS)'); }
+  const text = await res.text();
+  const ms = performance.now() - t0;
+  if (!res.ok) {
+    const e = new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
+    e.retryAfter = (+res.headers.get('Retry-After') || 0) * 1000;
+    throw e;
+  }
+  let json;
+  try { json = JSON.parse(text); } catch { throw new Error('bad JSON: ' + text.slice(0, 200)); }
+  const u = json.usage || {};
+  return { ...readAnswer(cfg.style, json), ms, tokens: u.prompt_tokens ?? u.input_tokens ?? 0 };
+}
+
+// ---- physics ----
+// Exact crossing x at the paddle row, with wall bounces.
+// ponytail: ignores bricks hit on the way down (rare); simulate the path if accuracy numbers look off.
+function predictX(b, y = PADDLE_Y - R) {
+  if (b.vy <= 0) return null;
+  const L = W - 2 * R, x = b.x + b.vx * (y - b.y) / b.vy - R;
+  const m = ((x % (2 * L)) + 2 * L) % (2 * L);
+  return R + (m <= L ? m : 2 * L - m);
+}
+const zoneOf = x => Math.min(ZONES - 1, Math.max(0, Math.floor(x / ZW)));
+// Probability-weighted mean of the chosen zone and its neighbours: when the model is torn between
+// neighbours, sit between them. Far zones are ignored so a spread-out tail can't drag the paddle to the middle.
+function aimX(r) {
+  const c = ZONE_IDS.indexOf(r.choice);
+  let s = 0, w = 0;
+  for (let i = Math.max(0, c - 1); i <= Math.min(ZONES - 1, c + 1); i++) {
+    const p = +r.probabilities[ZONE_IDS[i]] || 0; s += p * (i + 0.5) * ZW; w += p;
+  }
+  return w > 0 ? s / w : (c + 0.5) * ZW;
+}
+
+function makeBricks() {
+  const bricks = [];
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 8; c++) bricks.push({ x: c * 60 + 2, y: 50 + r * 22, w: 56, h: 18, row: r });
+  return bricks;
+}
+
+function newGame() {
+  game = { score: 0, lives: 3, bricks: makeBricks(), paddle: { x: W / 2, target: W / 2 }, targetZone: null, descent: 0, over: false };
+  resetBall();
+}
+
+function resetBall() {
+  game.ball = { x: game.paddle.x, y: PADDLE_Y - R - 1, vx: 0, vy: 0 };
+  game.launchAt = performance.now() + 1000;
+}
+
+function hitBrick() {
+  const b = game.ball;
+  const i = game.bricks.findIndex(k => b.x + R > k.x && b.x - R < k.x + k.w && b.y + R > k.y && b.y - R < k.y + k.h);
+  if (i < 0) return false;
+  game.bricks.splice(i, 1);
+  game.score += 10;
+  if (!game.bricks.length) game.bricks = makeBricks();
+  return true;
+}
+
+function step(dt) {
+  const g = game, p = g.paddle, b = g.ball;
+  const d = p.target - p.x;
+  p.x += Math.sign(d) * Math.min(Math.abs(d), PADDLE_SPEED * dt);
+
+  if (!b.vx && !b.vy) {
+    b.x = p.x;
+    if (performance.now() >= g.launchAt) {
+      const a = (Math.random() - 0.5) * Math.PI / 2;
+      b.vx = BALL_SPEED * Math.sin(a); b.vy = -BALL_SPEED * Math.cos(a);
+    }
+    return;
+  }
+
+  const wasFalling = b.vy > 0, y0 = b.y;
+  if (wasFalling) stats.fallT += dt;
+  b.x += b.vx * dt;
+  if (hitBrick()) { b.x -= b.vx * dt; b.vx = -b.vx; }
+  if (b.x < R) { b.x = R; b.vx = Math.abs(b.vx); }
+  else if (b.x > W - R) { b.x = W - R; b.vx = -Math.abs(b.vx); }
+
+  b.y += b.vy * dt;
+  if (hitBrick()) { b.y -= b.vy * dt; b.vy = -b.vy; }
+  if (b.y < R) { b.y = R; b.vy = Math.abs(b.vy); }
+
+  if (b.vy > 0 && y0 + R < PADDLE_Y && b.y + R >= PADDLE_Y && Math.abs(b.x - p.x) <= PADDLE_W / 2 + R) {
+    const a = Math.max(-1, Math.min(1, (b.x - p.x) / (PADDLE_W / 2))) * Math.PI / 3;
+    b.vx = BALL_SPEED * Math.sin(a); b.vy = -BALL_SPEED * Math.cos(a);
+    b.y = PADDLE_Y - R;
+    stats.hits++;
+  } else if (b.y - R > H) {
+    stats.misses++;
+    g.descent++;
+    if (--g.lives <= 0) g.over = true; else resetBall();
+    return;
+  }
+  if (wasFalling !== b.vy > 0) g.descent++;
+}
+
+// ---- decision loop: one request in flight at a time ----
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function makeState(b, paddleX, hint) {
+  const ball = { x: Math.round(b.x), y: Math.round(b.y), vx: Math.round(b.vx), vy: Math.round(b.vy) };
+  const s = { ball, paddle: { x: Math.round(paddleX), y: PADDLE_Y, width: PADDLE_W }, field: { width: W, height: H } };
+  if (hint === 'raw') return s;
+  const dy = PADDLE_Y - R - ball.y;
+  if (hint === 'unwalled') return { ...s, no_walls_x: Math.round(ball.x + ball.vx * dy / ball.vy) };
+  return { ...s, crossing_x: Math.round(predictX(ball)) };
+}
+const snapshot = () => makeState(game.ball, game.paddle.x, cfg.hint);
+const sampleState = hint => makeState({ x: 312, y: 140, vx: 90, vy: 120 }, 200, hint);
+
+async function decisionLoop(id) {
+  while (running && id === loopId) {
+    const b = game.ball;
+    if (document.hidden || game.over || b.vy <= 0) { await sleep(20); continue; }
+    const state = snapshot(), tx = predictX(state.ball), descent = game.descent;
+    inflightSince = performance.now();
+    try {
+      const r = await decide(state);
+      if (id !== loopId) return;
+      const aim = aimX(r);
+      record(r, tx, aim, state);
+      if (descent === game.descent) {
+        game.targetZone = ZONE_IDS.indexOf(r.choice);
+        game.paddle.target = aim;
+      }
+    } catch (e) {
+      if (id !== loopId) return;
+      inflightSince = 0;
+      stats.errors++; stats.lastError = e.message;
+      const wait = Math.max(ERROR_BACKOFF_MS, e.retryAfter || 0);
+      backoffUntil = performance.now() + wait;
+      await sleep(wait);
+    }
+    inflightSince = 0;
+  }
+}
+
+// ---- stats ----
+// Distance from ball to paddle row when asked. Bricks end ~160 px, paddle at 440.
+const BANDS = [['near', 100], ['mid', 200], ['far', Infinity]];
+const newBand = () => ({ n: 0, correct: 0, near: 0 });
+const newStats = () => ({
+  n: 0, lat: [], fallT: 0, correct: 0, near: 0, reach: 0, aimErr: 0, hits: 0, misses: 0, errors: 0, lastError: '', tokens: 0, last: null, log: [],
+  bands: Object.fromEntries(BANDS.map(([k]) => [k, newBand()])),
+});
+
+function record(r, tx, aim, state) {
+  const s = stats, truth = zoneOf(tx), idx = ZONE_IDS.indexOf(r.choice), diff = Math.abs(idx - truth);
+  const band = s.bands[BANDS.find(([, max]) => PADDLE_Y - state.ball.y < max)[0]];
+  s.n++; band.n++;
+  s.lat.push(r.ms); if (s.lat.length > 100) s.lat.shift();
+  if (diff === 0) { s.correct++; band.correct++; }
+  if (diff <= 1) { s.near++; band.near++; }
+  if (Math.abs(aim - tx) <= PADDLE_W / 2 + R) s.reach++;
+  s.aimErr += Math.abs(aim - tx);
+  s.tokens += r.tokens;
+  // time left before the ball reaches the paddle when the answer arrived (negative = too late)
+  const margin = ((PADDLE_Y - R - state.ball.y) / state.ball.vy) * 1000 - r.ms;
+  s.last = { ...r, truth, diff, margin };
+  const conf = r.confidence == null ? '  ?' : String(Math.round(r.confidence * 100)).padStart(3) + '%';
+  s.log.unshift(`#${String(s.n).padEnd(4)} ${String(Math.round(r.ms)).padStart(5)} ms  ${r.choice} ${conf}  truth z${truth} ${diff === 0 ? '✓' : diff === 1 ? '≈' : '✗'}`);
+  if (s.log.length > 12) s.log.pop();
+}
+
+const fmt = ms => ms == null ? '—' : Math.round(ms) + ' ms';
+const pct = (a, n) => n ? Math.round(100 * a / n) + '%' : '—';
+const quant = (arr, q) => { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(q * s.length))]; };
+
+function status() {
+  const now = performance.now();
+  if (game.over) return 'game over';
+  if (document.hidden) return 'paused (tab hidden)';
+  if (inflightSince) return `request in flight… ${Math.round(now - inflightSince)} ms`;
+  if (backoffUntil > now) return `backing off after error (${Math.round(backoffUntil - now)} ms)`;
+  return game.ball.vy > 0 ? 'ready' : 'waiting (ball not falling, no requests)';
+}
+
+const HUD_ROWS = [
+  ['model', () => cfg.model],
+  ['endpoint', () => `${new URL(cfg.url).host} (${cfg.style})`],
+  ['input', () => $('hint').selectedOptions[0].textContent],
+  ['status', status],
+  ['decisions', () => `${stats.n}  (${(stats.fallT ? stats.n / stats.fallT : 0).toFixed(1)}/s while falling)`],
+  ['latency last', () => fmt(stats.last?.ms)],
+  ['latency avg', () => fmt(stats.lat.length ? stats.lat.reduce((a, b) => a + b, 0) / stats.lat.length : null)],
+  ['p50 / p95', () => `${fmt(quant(stats.lat, 0.5))} / ${fmt(quant(stats.lat, 0.95))}`],
+  ['min / max', () => `${fmt(quant(stats.lat, 0))} / ${fmt(quant(stats.lat, 1))}`],
+  ['time to spare', () => stats.last ? fmt(stats.last.margin) + ' before ball reached paddle' : '—'],
+  ['last answer', () => {
+    const l = stats.last;
+    return l ? `${l.choice} (${l.confidence == null ? '?' : Math.round(l.confidence * 100) + '%'}), truth z${l.truth} ${l.diff ? '✗' : '✓'}` : '—';
+  }],
+  ['accuracy', () => `${pct(stats.correct, stats.n)} exact, ${pct(stats.near, stats.n)} within ±1 zone`],
+  ...BANDS.map(([k, max]) => [`· ${k} ${max === Infinity ? '>200' : '<' + max}px`, () => {
+    const b = stats.bands[k];
+    return b.n ? `${pct(b.correct, b.n)} exact, ${pct(b.near, b.n)} ±1  (n=${b.n})` : '—';
+  }]),
+  ['aim (weighted)', () => stats.n ? `${pct(stats.reach, stats.n)} within paddle reach, avg off ${Math.round(stats.aimErr / stats.n)} px` : '—'],
+  ['paddle', () => `${stats.hits} hits / ${stats.misses} misses`],
+  ['score / lives', () => `${game.score} / ${game.lives}`],
+  ['tokens', () => `${stats.tokens} in total, ${stats.n ? Math.round(stats.tokens / stats.n) : 0} per decision`],
+  ['errors', () => String(stats.errors)],
+  ['last error', () => stats.lastError || '—'],
+];
+
+const $ = id => document.getElementById(id);
+const hudCells = HUD_ROWS.map(([label]) => {
+  const dt = document.createElement('dt'), dd = document.createElement('dd');
+  dt.textContent = label;
+  if (label === 'last error') dd.className = 'err';
+  $('stats').append(dt, dd);
+  return dd;
+});
+const bars = ZONE_IDS.map(z => {
+  const d = document.createElement('div'), i = document.createElement('i'), b = document.createElement('b');
+  b.textContent = z; b.style.fontWeight = 'normal';
+  d.append(i, b); $('bars').append(d);
+  return d;
+});
+
+function hud() {
+  HUD_ROWS.forEach(([, fn], i) => { hudCells[i].textContent = fn(); });
+  const l = stats.last;
+  bars.forEach((d, i) => {
+    const p = +(l?.probabilities?.[ZONE_IDS[i]] ?? 0);
+    d.firstChild.style.height = Math.max(0, Math.min(1, p)) * 45 + 'px';
+    d.classList.toggle('truth', l?.truth === i);
+  });
+  $('log').textContent = stats.log.join('\n');
+  $('again').hidden = !game.over;
+}
+
+// ---- rendering ----
+const ctx = $('cv').getContext('2d');
+function draw() {
+  const g = game, p = g.paddle, b = g.ball;
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = '11px monospace';
+  for (let i = 0; i < ZONES; i++) {
+    if (i % 2) { ctx.fillStyle = '#161616'; ctx.fillRect(i * ZW, PADDLE_Y - 10, ZW, H - PADDLE_Y + 10); }
+    ctx.fillStyle = '#555'; ctx.fillText('z' + i, i * ZW + 4, H - 6);
+  }
+  if (g.targetZone != null) { ctx.fillStyle = 'rgba(70,170,255,.3)'; ctx.fillRect(g.targetZone * ZW, PADDLE_Y - 10, ZW, H - PADDLE_Y + 10); }
+  if (b.vy > 0) { ctx.strokeStyle = '#4c4'; ctx.lineWidth = 2; ctx.strokeRect(zoneOf(predictX(b)) * ZW + 1, PADDLE_Y - 9, ZW - 2, H - PADDLE_Y + 8); }
+  for (const k of g.bricks) { ctx.fillStyle = `hsl(${k.row * 40},70%,55%)`; ctx.fillRect(k.x, k.y, k.w, k.h); }
+  ctx.fillStyle = '#eee';
+  ctx.fillRect(p.x - PADDLE_W / 2, PADDLE_Y, PADDLE_W, PADDLE_H);
+  ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, Math.PI * 2); ctx.fill();
+  ctx.font = '14px monospace';
+  ctx.fillText(`score ${g.score}`, 8, 22);
+  ctx.fillText(`lives ${g.lives}`, W - 80, 22);
+  if (g.over) { ctx.font = '28px monospace'; ctx.textAlign = 'center'; ctx.fillText('GAME OVER', W / 2, H / 2 + 40); ctx.textAlign = 'start'; }
+}
+
+// ---- app ----
+let cfg, game, stats = newStats(), running = false, loopId = 0, inflightSince = 0, backoffUntil = 0, lastT = 0, hudT = 0;
+
+function frame(t) {
+  if (!running) return;
+  const dt = Math.min((t - lastT) / 1000, 1 / 30);
+  lastT = t;
+  if (!game.over) step(dt);
+  draw();
+  if (t - hudT > 100) { hud(); hudT = t; }
+  requestAnimationFrame(frame);
+}
+
+function start() {
+  stats = newStats(); newGame();
+  running = true; loopId++; lastT = performance.now();
+  $('setup').hidden = true; $('game').hidden = false;
+  requestAnimationFrame(frame);
+  decisionLoop(loopId);
+}
+
+function stop() {
+  running = false; loopId++; inflightSince = 0; backoffUntil = 0;
+  $('game').hidden = true; $('setup').hidden = false;
+}
+
+function fillForm(c) { for (const k of ['url', 'key', 'model', 'style', 'hint']) $(k).value = c[k]; }
+const readForm = () => ({ url: $('url').value.trim(), key: $('key').value.trim(), model: $('model').value.trim(), style: $('style').value, hint: $('hint').value });
+const msg = t => { $('setupMsg').textContent = t; };
+
+$('show').onchange = e => { $('key').type = e.target.checked ? 'text' : 'password'; };
+$('forget').onclick = () => { clearConfig(); fillForm({ url: '', key: '', model: '', style: DEFAULTS.style }); msg(''); };
+$('settings').onclick = stop;
+$('again').onclick = () => newGame();
+$('form').onsubmit = async e => {
+  e.preventDefault();
+  const c = readForm();
+  if (!/^https?:\/\/[^/]/i.test(c.url)) return msg('API URL must start with https:// or http://');
+  saveConfig(c); cfg = c;
+  $('play').disabled = true; msg('Testing one decision call…');
+  try {
+    const r = await decide(sampleState(c.hint));
+    msg(`Test OK: ${r.choice} in ${Math.round(r.ms)} ms`);
+    start();
+  } catch (err) { msg('Test call failed: ' + err.message); }
+  finally { $('play').disabled = false; }
+};
+
+fillForm(loadConfig());
+
+// ---- self-check: open index.html?test ----
+if (new URLSearchParams(location.search).has('test')) {
+  let ok = true;
+  const t = (c, m) => { console.assert(c, m); ok &&= !!c; };
+  const c0 = { ...DEFAULTS, key: 'k' };
+  const SAMPLE_STATE = sampleState('raw');
+  t(sampleState('unwalled').no_walls_x === 533 && sampleState('answer').crossing_x === 416 && !('crossing_x' in SAMPLE_STATE), 'hint states');
+  t(JSON.parse(buildRequest('openai', { ...c0, hint: 'answer' }, SAMPLE_STATE).init.body).response_format.questions.zone.instructions === HINTS.answer, 'hint instructions');
+  const o = buildRequest('openai', c0, SAMPLE_STATE), ob = JSON.parse(o.init.body);
+  t(o.url === 'https://router.requesty.ai/v1/chat/completions', 'openai url');
+  t(o.init.headers.Authorization === 'Bearer k', 'auth header');
+  t(ob.messages.length === 1 && ob.messages[0].role === 'user' && JSON.parse(ob.messages[0].content).ball.x === 312, 'openai messages');
+  t(ob.response_format.type === 'questions' && ob.response_format.questions.zone.criteria.z7 === 'x 420-480', 'openai questions');
+  const s = buildRequest('systemone', { ...c0, url: 'https://api.typesafe.ai/v1/' }, SAMPLE_STATE), sb = JSON.parse(s.init.body);
+  t(s.url === 'https://api.typesafe.ai/v1/systemone' && sb.state.ball.x === 312 && sb.questions.zone.type === 'choice', 'systemone request');
+  const ans = { zone: { type: 'choice', choice: 'z6', confidence: 0.8, probabilities: { z6: 0.8, z7: 0.2 } } };
+  t(readAnswer('openai', { choices: [{ message: { content: JSON.stringify(ans) } }] }).choice === 'z6', 'read openai');
+  t(readAnswer('systemone', { model: 'jev-1.14.0', answers: ans }).confidence === 0.8, 'read systemone');
+  let threw = false; try { readAnswer('openai', { choices: [{ message: { content: '{}' } }] }); } catch { threw = true; }
+  t(threw, 'readAnswer throws on missing zone');
+  t(predictX({ x: 100, y: 0, vx: 0, vy: 1 }) === 100, 'predictX straight');
+  t(Math.abs(predictX({ x: W - R - 10, y: PADDLE_Y - R - 20, vx: 1, vy: 1 }) - (W - R - 10)) < 1e-9, 'predictX wall bounce');
+  t(aimX({ choice: 'z1', probabilities: { z1: 0.5, z2: 0.5 } }) === 120, 'aimX weighted');
+  t(aimX({ choice: 'z3', probabilities: {} }) === 210, 'aimX falls back to choice');
+  t(aimX({ choice: 'z0', probabilities: { z0: 0.3, z4: 0.2, z5: 0.2, z6: 0.2, z7: 0.1 } }) === 30, 'aimX ignores far zones');
+  console.log(ok ? 'PASS' : 'FAIL');
+  document.title = (ok ? 'PASS' : 'FAIL') + ' — BOOLS';
+}
+</script>
+</body>
+</html>
