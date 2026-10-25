@@ -18,7 +18,7 @@
   .err { color: #f77; white-space: pre-wrap; word-break: break-word; }
   #game { display: flex; flex-direction: column; gap: 16px; }
   #game > div { width: 100%; }
-  canvas { background: #000; border: 1px solid #333; width: 100%; height: auto; display: block; }
+  canvas { background: #000; border: 1px solid #333; width: 100%; height: auto; aspect-ratio: 1; display: block; }
   #hud { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 16px; font: 12px ui-monospace, monospace; }
   #stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0 0 10px; }
   #stats dt { color: #888; }
@@ -665,6 +665,11 @@ function hud() {
 // ---- rendering ----
 const ctx = $('cv').getContext('2d');
 function draw() {
+  const size = Math.max(1, Math.round(ctx.canvas.clientWidth * window.devicePixelRatio));
+  if (ctx.canvas.width !== size || ctx.canvas.height !== size) {
+    ctx.canvas.width = ctx.canvas.height = size;
+  }
+  ctx.setTransform(size / W, 0, 0, size / H, 0, 0);
   const g = game, p = g.paddle, b = g.ball;
   ctx.clearRect(0, 0, W, H);
   ctx.font = '11px monospace';
