@@ -121,7 +121,7 @@ The setup screen is shown first. **The game stays hidden until a test call succe
 
 **Style options:**
 1. **OpenAI-compatible (Requesty, etc.)**: enabled and the default.
-2. **System One (Jev native)**: shown but **disabled** for now. We will come back to it (section 6.2).
+2. **System One native**: `POST {url}/systemone` (section 6.2). On Requesty, use `typesafe/jev-1.14.0` rather than the `jev-latest` alias; the form switches it automatically.
 
 **Behavior:**
 - Settings are saved in **`localStorage`** under one key, e.g. `bools.config`, as `{url, key, model, style}`.
@@ -265,11 +265,11 @@ Rules from Requesty's docs:
 - Images (Clef only): up to 4 per request, sent as base64 `data:` URLs. Remote image URLs are rejected.
 - A 429 means rate limited. Respect `Retry-After`.
 
-### 6.2 System One style (disabled; next step)
+### 6.2 System One native style (enabled)
 
-This is Jev's native format. Implement it later as a second request-builder and answer-reader pair behind the same dropdown. Nothing else changes.
+This is Jev's native format, the second option in the **API style** dropdown. It uses the same questions, state, aiming and music as the OpenAI-compatible style. Only the request wrapper and the answer location differ.
 
-`POST {url}/systemone`. The TypeSafe reference is `https://api.typesafe.ai/v1/systemone`.
+`POST {url}/systemone`. With Requesty that's `https://router.requesty.ai/v1/systemone`. TypeSafe's own endpoint is `https://api.typesafe.ai/v1/systemone`.
 
 Headers: `Authorization: Bearer {key}`, `Content-Type: application/json`
 
@@ -287,10 +287,12 @@ The response is plain JSON, with no message wrapper:
 { "model": "jev-1.14.0", "answers": { "zone": { "type": "choice", "choice": "z6", "confidence": 0.8, "probabilities": { "...": 0 } } }, "usage": { "input_tokens": 300, "output_tokens": 0 } }
 ```
 
-**To verify before enabling:**
-- Does TypeSafe's API allow direct browser calls (CORS)?
-- What is the exact path of Requesty's "Create System One Decision" endpoint?
-- Other servers that speak this format include Laya, Kev, Clef on Workers AI, and Liquid's `/decisions/v1/systemone`.
+**Verified (Oct 2026):**
+- **Requesty's `/v1/systemone` works from the browser.** Its preflight returns `Access-Control-Allow-Origin: *`. Tested end to end in the browser: paddle p50 225 ms, about 580 tokens per decision, and 48-note music tracks in about 300 ms.
+- **Requesty's `/systemone` rejects the `typesafe/jev-latest` alias** (404 "model not found"). It accepts `typesafe/jev-1.14.0`. Picking the native style while the model is `typesafe/jev-latest` switches the model to `typesafe/jev-1.14.0`. Other Requesty models (e.g. `cloudflare/clef-flash`) work with their usual IDs.
+- **The native style uses more tokens than OpenAI-compatible:** Jev on `/systemone` reported about 550 input tokens per decision, against about 400, plus some output tokens. Output tokens are free.
+- **TypeSafe's own API (`api.typesafe.ai`) blocks browser calls.** Its preflight returns 400 with no CORS headers, so it can't be used from BOOLS without a proxy. Use Requesty, or another provider that allows CORS.
+- Other servers that speak this format, untested: Ollama, LM Studio, LLM Gateway, Abacus RouteLLM, and Liquid's `/decisions/v1/systemone`.
 
 ## 7. Code shape (inside `index.html`)
 
@@ -329,7 +331,6 @@ Keep it minimal. There is no framework and no build step.
 
 | Skipped | Add when |
 |---|---|
-| System One (Jev native) style | Next step. It is already in the dropdown, disabled. |
 | Screenshot input (canvas → base64 PNG → Clef or Jev 1.14 images) | Showing the model playing "from pixels". |
 | A second question, e.g. a `noul` for "is the ball approaching?" | If the zone answers alone look jittery. |
 | Side-by-side race of two models | If a speed comparison becomes the demo's focus. |

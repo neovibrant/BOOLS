@@ -153,7 +153,7 @@
     <label>API style
       <select id="style">
         <option value="openai">OpenAI-compatible (Requesty, etc.)</option>
-        <option value="systemone" disabled>System One (Jev native) — coming soon</option>
+        <option value="systemone">System One native (POST /systemone)</option>
       </select>
     </label>
     <div id="musicBox" class="music-box">
@@ -723,6 +723,8 @@ const readForm = () => ({ url: $('url').value.trim(), key: $('key').value.trim()
 const msg = t => { $('setupMsg').textContent = t; };
 
 $('url').oninput = syncModelList;
+// Requesty's /systemone rejects the jev-latest alias (404), so switch to the pinned version.
+$('style').onchange = e => { if (e.target.value === 'systemone' && $('model').value.trim() === 'typesafe/jev-latest') $('model').value = 'typesafe/jev-1.14.0'; };
 for (const id of ['url', 'key', 'model']) $(id).addEventListener('change', () => autoMusic('settings ready'));
 $('show').onchange = e => { $('key').type = e.target.checked ? 'text' : 'password'; };
 $('forget').onclick = () => {

@@ -17,7 +17,7 @@ A Breakout game played live by a **System One decision model**: a model that ans
 ## Play
 
 1. Get an API key from [Requesty](https://requesty.ai), ideally with a spending limit.
-2. Open the site, paste the key, press **Play**. The default model is `typesafe/jev-latest`. The Model field suggests Requesty's other decision models, or you can type any OpenAI-compatible decision-model endpoint and model.
+2. Open the site, paste the key, press **Play**. The default model is `typesafe/jev-latest`. The Model field suggests Requesty's other decision models, or you can type any decision-model endpoint and model. **API style** picks the request format: OpenAI-compatible (`/chat/completions`) or System One native (`/systemone`).
 
 The key stays in your browser's `localStorage` and is sent only to the API URL you enter. There is no backend.
 
