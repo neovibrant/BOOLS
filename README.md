@@ -9,6 +9,10 @@ A Breakout game played live by a **System One decision model**: a model that ans
 - While the ball falls, the game sends its state (ball position and velocity, paddle, field) and one `choice` question: *"Where will the ball cross the paddle row?"*, with 8 zones as options.
 - The model returns a zone plus a probability per zone. The paddle slides toward it. Then the next question goes out.
 - The game never predicts the ball itself. All movement comes from the model.
+- **The model also composes the soundtrack, live.** Pick a style: 🎮 Arcade chiptune, 🌆 Synthwave chase, 🕯️ Dungeon crawl, 🔥 Boss battle, or 🔇 No music.
+  - One call with one typed question per note (24–48 notes) writes a 20-second melody. The browser plays it on repeat with no further calls.
+  - A new track is composed on a new game, a lost life, the next level, a style change, or **⏭ Next track**.
+  - Music starts on the settings screen as soon as the URL, key and model are filled in.
 
 ## Play
 
@@ -17,7 +21,7 @@ A Breakout game played live by a **System One decision model**: a model that ans
 
 The key stays in your browser's `localStorage` and is sent only to the API URL you enter. There is no backend.
 
-Cost: about 400 input tokens per decision, a few decisions per second while the ball falls. Output is free.
+Cost: about 400 input tokens per decision, a few decisions per second while the ball falls. A music track is 5,000–10,000 tokens, once per track. Output is free.
 
 ## Stats on screen
 

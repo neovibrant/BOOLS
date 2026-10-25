@@ -70,6 +70,15 @@
   #setupMsg:empty { display: none; }
   .setup-footer { text-align: center; color: #858ca5; letter-spacing: 1px; margin: 24px 0 0; line-height: 1.8; }
   #game { max-width: 920px; margin: auto; }
+  .music-box { display: grid; gap: 8px; padding: 12px; border: 1px dashed #4a5272; background: #12152255; }
+  #gameMusic .music-box { margin-top: 12px; max-width: 480px; }
+  .music-box label { display: grid; gap: 8px; font-size: 12px; font-weight: 600; color: #c5c9dc; }
+  .music-box input[type=range] { flex: 1; padding: 0; min-height: 0; accent-color: #ffd17b; }
+  .music-box .note { margin: 0; font-size: 11px; }
+  #notes { display: flex; flex-wrap: wrap; gap: 2px; font: 10px ui-monospace, monospace; }
+  #notes:empty { display: none; }
+  #notes i { font-style: normal; padding: 1px 3px; color: #8d93ab; background: #0e111d; min-width: 26px; text-align: center; }
+  #notes i.on { background: #ffd17b; color: #252031; }
   @media (max-width: 640px) {
     body { padding: 22px 16px; }
     .masthead { font-size: 9px; letter-spacing: 1px; }
@@ -147,6 +156,20 @@
         <option value="systemone" disabled>System One (Jev native) — coming soon</option>
       </select>
     </label>
+    <div id="musicBox" class="music-box">
+      <label>Soundtrack, composed live by your model
+        <select id="music">
+          <option value="arcade">🎮 Arcade chiptune</option>
+          <option value="synthwave">🌆 Synthwave chase</option>
+          <option value="dungeon">🕯️ Dungeon crawl</option>
+          <option value="boss">🔥 Boss battle</option>
+          <option value="off">🔇 No music</option>
+        </select>
+      </label>
+      <div class="row"><input type="range" id="vol" min="0" max="1" step="0.05" value="0.3" aria-label="Music volume"><button type="button" id="nextTrack" title="Ask the model to compose a new track">⏭ Next track</button></div>
+      <p class="note" id="nowPlaying" aria-live="polite"></p>
+      <div id="notes" aria-hidden="true"></div>
+    </div>
     <p class="note" id="key-notice">Your key is stored in this browser's localStorage and sent only to the URL above, never to this site.
       Anyone with access to this browser, or any script running on this page, could read it. Use a spending-limited key.</p>
     <div class="actions"><button id="play">▶ Start game</button><button type="button" id="forget">Forget</button></div>
@@ -162,6 +185,7 @@
     <canvas id="cv" width="480" height="480" aria-label="Breakout game played by the model"></canvas>
     <p class="note">Blue = zone the model chose. The game never predicts the ball; answers are scored after it reaches the paddle row.</p>
     <div class="row"><button id="again" hidden>Play again</button><button id="settings">Settings</button></div>
+    <div id="gameMusic"></div>
   </div>
   <div id="hud" aria-live="off">
     <dl id="stats"></dl>
@@ -180,7 +204,7 @@ const PADDLE_SPEED = 360;    // px/s
 const PADDLE_W = 70, PADDLE_H = 10, PADDLE_Y = 440, R = 6;
 const TIMEOUT_MS = 5000, ERROR_BACKOFF_MS = 1000;
 const CFG_KEY = 'bools.config';
-const DEFAULTS = { url: 'https://router.requesty.ai/v1', key: '', model: 'typesafe/jev-latest', style: 'openai' };
+const DEFAULTS = { url: 'https://router.requesty.ai/v1', key: '', model: 'typesafe/jev-latest', style: 'openai', music: 'arcade' };
 const QUESTION = {
   type: 'choice',
   instructions: 'Ball x,y is its center, velocities are px per second, y grows downward. ' +
@@ -194,9 +218,8 @@ const saveConfig = c => localStorage.setItem(CFG_KEY, JSON.stringify(c));
 const clearConfig = () => localStorage.removeItem(CFG_KEY);
 
 // ---- API ----
-function buildRequest(style, cfg, state) {
+function buildRequest(style, cfg, state, questions = { zone: QUESTION }) {
   const base = cfg.url.replace(/\/+$/, '');
-  const questions = { zone: QUESTION };
   const sys1 = style === 'systemone';
   const body = sys1
     ? { model: cfg.model, state, questions }
@@ -207,21 +230,29 @@ function buildRequest(style, cfg, state) {
   };
 }
 
+function readAnswers(style, json) {
+  const a = style === 'systemone' ? json?.answers : json?.choices?.[0]?.message?.content;
+  return typeof a === 'string' ? JSON.parse(a) : a;
+}
+
 function readAnswer(style, json) {
-  let a = style === 'systemone' ? json?.answers : json?.choices?.[0]?.message?.content;
-  if (typeof a === 'string') a = JSON.parse(a);
-  a = a?.zone;
+  const a = readAnswers(style, json)?.zone;
   if (!a || !ZONE_IDS.includes(a.choice)) throw new Error('no valid zone in answer: ' + JSON.stringify(json).slice(0, 200));
   const probabilities = a.probabilities || {};
   return { choice: a.choice, confidence: a.confidence ?? probabilities[a.choice] ?? null, probabilities };
 }
 
 async function decide(state) {
-  const { url, init } = buildRequest(cfg.style, cfg, state);
+  const r = await ask(state);
+  return { ...readAnswer(cfg.style, r.json), ms: r.ms, tokens: r.tokens };
+}
+
+async function ask(state, questions, timeout = TIMEOUT_MS, c = cfg) {
+  const { url, init } = buildRequest(c.style, c, state, questions);
   const t0 = performance.now();
   let res;
-  try { res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) }); }
-  catch (e) { throw new Error(e.name === 'TimeoutError' ? `timeout after ${TIMEOUT_MS} ms` : 'network error, or provider blocks browser calls (CORS)'); }
+  try { res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeout) }); }
+  catch (e) { throw new Error(e.name === 'TimeoutError' ? `timeout after ${timeout} ms` : 'network error, or provider blocks browser calls (CORS)'); }
   const text = await res.text();
   const ms = performance.now() - t0;
   if (!res.ok) {
@@ -232,7 +263,7 @@ async function decide(state) {
   let json;
   try { json = JSON.parse(text); } catch { throw new Error('bad JSON: ' + text.slice(0, 200)); }
   const u = json.usage || {};
-  return { ...readAnswer(cfg.style, json), ms, tokens: u.prompt_tokens ?? u.input_tokens ?? 0 };
+  return { json, ms, tokens: u.prompt_tokens ?? u.input_tokens ?? 0 };
 }
 
 // ---- physics ----
@@ -270,7 +301,7 @@ function hitBrick() {
   if (i < 0) return false;
   game.bricks.splice(i, 1);
   game.score += 10;
-  if (!game.bricks.length) game.bricks = makeBricks();
+  if (!game.bricks.length) { game.bricks = makeBricks(); requestTrack('next level'); }   // ponytail: no level counter; bricks just refill
   return true;
 }
 
@@ -309,7 +340,7 @@ function step(dt) {
   } else if (b.y - R > H) {
     stats.misses++;
     newDescent();
-    if (--g.lives <= 0) g.over = true; else resetBall();
+    if (--g.lives <= 0) { g.over = true; syncAudio(); } else { resetBall(); requestTrack('life lost'); }
     return;
   }
   if (wasFalling !== b.vy > 0) newDescent();
@@ -355,6 +386,153 @@ async function decisionLoop(id) {
     }
     inflightSince = 0;
   }
+}
+
+// ---- music: the model composes a 20 s loop, one typed choice per beat; Web Audio repeats it with no further calls ----
+const MUSIC_TIMEOUT_MS = 15000;
+// Every style loops in exactly 20 s: bars * 4 beats * 60 / bpm. Drum arrays are eighth-note steps within a bar (0-7).
+const MUSIC_STYLES = {
+  arcade: { label: '🎮 Arcade chiptune', name: 'arcade chiptune', bpm: 144, bars: 12, key: 'A minor',
+    notes: { A4: 69, B4: 71, C5: 72, D5: 74, E5: 76, F5: 77, G5: 79, A5: 81 },
+    chords: ['Am', 'F', 'C', 'G'], tones: { Am: 'A C E', F: 'F A C', C: 'C E G', G: 'G B D' }, roots: { Am: 45, F: 41, C: 48, G: 43 },
+    mood: 'Catchy 80s 8-bit arcade tune: bouncy, favour chord tones and small steps, repeat a short motif.', end: 'A',
+    lead: ['square', 0.12, 0.9], bass: 'octaves', kick: [0, 4], snare: [2, 6], hat: [1, 3, 5, 7] },
+  synthwave: { label: '🌆 Synthwave chase', name: 'synthwave chase', bpm: 96, bars: 8, key: 'E minor',
+    notes: { E4: 64, 'F#4': 66, G4: 67, A4: 69, B4: 71, C5: 72, D5: 74, E5: 76 },
+    chords: ['Em', 'C', 'G', 'D'], tones: { Em: 'E G B', C: 'C E G', G: 'G B D', D: 'D F# A' }, roots: { Em: 40, C: 36, G: 43, D: 38 },
+    mood: 'Driving 80s synthwave night chase: soaring and emotional, leaps between chord tones, few rests.', end: 'E',
+    lead: ['sawtooth', 0.07, 0.95], bass: 'pulse', kick: [0, 2, 4, 6], snare: [2, 6], hat: [1, 3, 5, 7] },
+  dungeon: { label: '🕯️ Dungeon crawl', name: 'dungeon crawl', bpm: 72, bars: 6, key: 'D harmonic minor',
+    notes: { D4: 62, E4: 64, F4: 65, G4: 67, A4: 69, Bb4: 70, 'C#5': 73, D5: 74 },
+    chords: ['Dm', 'Bb', 'Gm', 'A', 'Dm', 'A'], tones: { Dm: 'D F A', Bb: 'Bb D F', Gm: 'G Bb D', A: 'A C# E' }, roots: { Dm: 38, Bb: 46, Gm: 43, A: 45 },
+    mood: 'Slow, eerie dungeon crawl: sparse and mysterious, use rests, half steps and the dark C#.', end: 'D',
+    lead: ['triangle', 0.25, 1.6], bass: 'held', kick: [0], snare: [], hat: [2, 6] },
+  boss: { label: '🔥 Boss battle', name: 'boss battle', bpm: 120, bars: 10, key: 'E phrygian',
+    notes: { E4: 64, F4: 65, G4: 67, A4: 69, B4: 71, C5: 72, D5: 74, E5: 76 },
+    chords: ['Em', 'Em', 'F', 'Em'], tones: { Em: 'E G B', F: 'F A C' }, roots: { Em: 40, F: 41 },
+    mood: 'Intense boss battle: aggressive and urgent, hammer low notes, menacing E-F half steps, no rests.', end: 'E',
+    lead: ['square', 0.1, 0.6], bass: 'pulse', kick: [0, 1, 4, 5], snare: [2, 6], hat: [0, 1, 2, 3, 4, 5, 6, 7] },
+};
+const hz = m => 440 * 2 ** ((m - 69) / 12);
+const chordAt = (st, bar) => st.chords[bar % st.chords.length];
+
+const musicQuestions = st => Object.fromEntries(Array.from({ length: st.bars * 4 }, (_, i) => {
+  const bar = i >> 2, c = chordAt(st, bar);
+  return ['n' + String(i).padStart(2, '0'), { type: 'choice',
+    criteria: { ...Object.fromEntries(Object.keys(st.notes).map(n => [n, 'note ' + n])), rest: 'silence' },
+    instructions: `Melody note for bar ${bar + 1} of ${st.bars}, beat ${i % 4 + 1}, over chord ${c} (${st.tones[c]}). ${st.mood}` +
+      (bar === st.bars - 1 ? ` End the tune on ${st.end}.` : '') }];
+}));
+
+const trackState = (st, reason) => ({ music: st.name, key: st.key, tempo_bpm: st.bpm, bars: st.bars,
+  chords: Array.from({ length: st.bars }, (_, b) => chordAt(st, b)), event: reason, track: music.n + 1,
+  score: game?.score ?? 0, lives: game?.lives ?? 3 });
+
+// Sample from the model's probabilities, so every track differs even for the same state.
+function pickNote(a, st, rnd = Math.random) {
+  const ok = n => n in st.notes || n === 'rest';
+  const p = Object.entries(a?.probabilities || {}).filter(([n, v]) => ok(n) && v > 0);
+  let r = rnd() * p.reduce((s, [, v]) => s + v, 0);
+  for (const [n, v] of p) if ((r -= v) <= 0) return n;
+  return ok(a?.choice) ? a.choice : 'rest';
+}
+
+const music = { style: 'arcade', vol: 0.3, ac: null, master: null, noise: null, track: null, next: null, step: 0, t: 0, marks: [],
+  busy: 0, reason: '', n: 0, error: '', shown: null };
+
+// At most one composition in flight; triggers while composing are absorbed by the one in flight.
+async function requestTrack(reason) {
+  const style = music.style, c = apiCfg();
+  if (!MUSIC_STYLES[style] || music.busy || !c) return;
+  music.busy = performance.now(); music.reason = reason; music.error = '';
+  try {
+    const st = MUSIC_STYLES[style], qs = musicQuestions(st), keys = Object.keys(qs);
+    const r = await ask(trackState(st, reason), qs, MUSIC_TIMEOUT_MS, c);
+    const a = readAnswers(c.style, r.json);
+    if (!keys.some(k => a?.[k])) throw new Error('no melody in answer: ' + JSON.stringify(r.json).slice(0, 200));
+    music.next = { style, notes: keys.map(k => pickNote(a[k], st)), model: c.model, ms: r.ms, tokens: r.tokens, n: ++music.n };
+  } catch (e) { music.error = e.message; }
+  music.busy = 0;
+  if (music.style !== style) { music.next = null; requestTrack('style change'); }   // style changed while composing
+}
+
+// Browsers only allow sound after a user gesture, so the context may start suspended; any click resumes it.
+function ensureAudio() {
+  if (music.ac) return;
+  const ac = music.ac = new AudioContext();
+  music.master = ac.createGain(); music.master.gain.value = music.vol; music.master.connect(ac.destination);
+  music.noise = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+  music.noise.getChannelData(0).forEach((_, i, d) => { d[i] = Math.random() * 2 - 1; });
+  setInterval(musicTick, 25);
+}
+
+function syncAudio() {
+  ensureAudio();
+  const play = MUSIC_STYLES[music.style] && !document.hidden && !(running && game?.over);
+  (play ? music.ac.resume() : music.ac.suspend()).catch(() => {});
+}
+
+// Lookahead scheduler: Web Audio plays on its own clock; this only queues the next ~200 ms.
+function musicTick() {
+  const ac = music.ac;
+  if (ac.state !== 'running') return;
+  if (!music.track && !music.next) { music.t = ac.currentTime + 0.1; music.step = 0; return; }
+  while (music.t < ac.currentTime + 0.2) {
+    if (music.next && music.step % 8 === 0) { music.track = music.next; music.next = null; music.step = 0; }   // swap at the next bar line
+    const st = MUSIC_STYLES[music.track.style];
+    playStep(st, music.step, music.t);
+    music.marks.push([music.t, music.step >> 1]); if (music.marks.length > 12) music.marks.shift();
+    music.t += 30 / st.bpm; music.step = (music.step + 1) % (st.bars * 8);
+  }
+}
+
+function tone(type, freq, t, dur, vol) {
+  const o = music.ac.createOscillator(), g = music.ac.createGain();
+  o.type = type; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g).connect(music.master); o.start(t); o.stop(t + dur);
+  return o;
+}
+
+function noise(t, dur, vol, highpass) {
+  const s = music.ac.createBufferSource(), f = music.ac.createBiquadFilter(), g = music.ac.createGain();
+  s.buffer = music.noise; f.type = 'highpass'; f.frequency.value = highpass;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  s.connect(f).connect(g).connect(music.master); s.start(t); s.stop(t + dur);
+}
+
+function playStep(st, step, t) {
+  const beat = 60 / st.bpm, s = step & 7, root = st.roots[chordAt(st, step >> 3)], note = music.track.notes[step >> 1];
+  const [wave, vol, len] = st.lead;
+  if (!(s & 1) && note !== 'rest') tone(wave, hz(st.notes[note]), t, beat * len, vol);
+  if (st.bass === 'octaves') tone('triangle', hz(root + (s & 1 ? 12 : 0)), t, beat * 0.45, 0.3);
+  else if (st.bass === 'pulse') tone('sawtooth', hz(root), t, beat * 0.4, 0.1);
+  else if (s === 0) tone('triangle', hz(root), t, beat * 3.8, 0.35);
+  if (st.kick.includes(s)) tone('sine', 150, t, 0.15, 0.8).frequency.exponentialRampToValueAtTime(40, t + 0.12);
+  if (st.snare.includes(s)) noise(t, 0.12, 0.25, 1500);
+  if (st.hat.includes(s)) noise(t, 0.03, 0.06, 7000);
+}
+
+function musicStatus() {
+  const st = MUSIC_STYLES[music.style], c = apiCfg(), tr = music.track, out = [];
+  if (!st) return 'Music off.';
+  if (!c) return `Fill in the API URL, key and model, and your model will compose ${st.name} music live.`;
+  if (music.busy) out.push(`✎ ${c.model} is composing a new ${st.name} track (${music.reason})… ${Math.round(performance.now() - music.busy)} ms`);
+  else if (music.error) out.push(`Couldn't compose: ${music.error}.${tr ? ' Keeping the current track.' : ''}`);
+  if (tr) out.push(`♪ Track #${tr.n}, composed live by ${tr.model}: ${tr.notes.length} notes in ${fmt(tr.ms)}, ${tr.tokens} tokens. Loops every 20 s with no new calls.`);
+  if (music.ac?.state !== 'running' && (tr || music.next) && !(running && game?.over)) out.push('Click anywhere to hear it.');
+  return out.join(' ');
+}
+
+// The note row under the status: the model's notes for the current track, with the one playing now highlighted.
+function updateMusicUI() {
+  $('nowPlaying').textContent = musicStatus();
+  if (music.shown !== music.track) {
+    music.shown = music.track;
+    $('notes').replaceChildren(...(music.track?.notes || []).map(n => { const i = document.createElement('i'); i.textContent = n === 'rest' ? '·' : n; return i; }));
+  }
+  const now = music.ac?.currentTime ?? 0, cur = music.marks.filter(([t]) => t <= now).at(-1)?.[1];
+  [...$('notes').children].forEach((el, i) => el.classList.toggle('on', i === cur));
 }
 
 // ---- stats ----
@@ -505,13 +683,30 @@ function start() {
   stats = newStats(); newGame();
   running = true; loopId++; lastT = performance.now();
   $('setup').hidden = true; $('game').hidden = false;
+  $('gameMusic').append($('musicBox'));   // one set of music controls, moved between screens
   requestAnimationFrame(frame);
   decisionLoop(loopId);
+  syncAudio(); requestTrack('game start');
 }
 
 function stop() {
   running = false; loopId++; inflightSince = 0; backoffUntil = 0;
   $('game').hidden = true; $('setup').hidden = false;
+  $('key-notice').before($('musicBox'));
+  syncAudio();
+}
+
+// Music can start before Play: any time the form has a usable URL, key and model (e.g. restored from localStorage).
+// During a game the tested config is used; on the settings screen, whatever is in the form.
+function apiCfg() {
+  if (running) return cfg;
+  const c = readForm();
+  return /^https?:\/\/[^/]/i.test(c.url) && c.key && c.model ? c : null;
+}
+function autoMusic(reason) {
+  if (running || !MUSIC_STYLES[music.style] || !apiCfg()) return;
+  syncAudio();
+  if (!music.track && !music.next) requestTrack(reason);
 }
 
 // Suggest Requesty's decision models only when the URL points at Requesty; typing anything else still works.
@@ -519,15 +714,36 @@ const syncModelList = () => {
   if (/^https:\/\/router\.requesty\.ai\/v1\/?$/i.test($('url').value.trim())) $('model').setAttribute('list', 'requestyModels');
   else $('model').removeAttribute('list');
 };
-function fillForm(c) { for (const k of ['url', 'key', 'model', 'style']) $(k).value = c[k]; syncModelList(); }
-const readForm = () => ({ url: $('url').value.trim(), key: $('key').value.trim(), model: $('model').value.trim(), style: $('style').value });
+function fillForm(c) {
+  for (const k of ['url', 'key', 'model', 'style', 'music']) $(k).value = c[k];
+  music.style = $('music').value;
+  syncModelList();
+}
+const readForm = () => ({ url: $('url').value.trim(), key: $('key').value.trim(), model: $('model').value.trim(), style: $('style').value, music: $('music').value });
 const msg = t => { $('setupMsg').textContent = t; };
 
 $('url').oninput = syncModelList;
+for (const id of ['url', 'key', 'model']) $(id).addEventListener('change', () => autoMusic('settings ready'));
 $('show').onchange = e => { $('key').type = e.target.checked ? 'text' : 'password'; };
-$('forget').onclick = () => { clearConfig(); fillForm({ url: '', key: '', model: '', style: DEFAULTS.style }); msg(''); };
+$('forget').onclick = () => {
+  clearConfig(); fillForm({ url: '', key: '', model: '', style: DEFAULTS.style, music: DEFAULTS.music }); msg('');
+  music.track = music.next = null;
+};
 $('settings').onclick = stop;
-$('again').onclick = () => newGame();
+$('again').onclick = () => { newGame(); syncAudio(); requestTrack('new game'); };
+$('music').onchange = e => {
+  music.style = e.target.value;
+  if (!running) { const saved = loadConfig(); saveConfig({ ...saved, music: music.style }); }
+  else saveConfig({ ...cfg, music: music.style });
+  if (MUSIC_STYLES[music.style]) { music.next = null; syncAudio(); requestTrack('style change'); }
+  else { music.track = music.next = null; syncAudio(); }
+};
+$('vol').oninput = e => { music.vol = +e.target.value; if (music.master) music.master.gain.value = music.vol; };
+$('nextTrack').onclick = () => { syncAudio(); requestTrack('next track button'); };
+document.addEventListener('visibilitychange', syncAudio);
+// Browsers block sound until the first user gesture; resume on any click or key.
+for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, () => { if (music.ac?.state === 'suspended') syncAudio(); });
+setInterval(updateMusicUI, 100);
 $('form').onsubmit = async e => {
   e.preventDefault();
   const c = readForm();
@@ -543,6 +759,7 @@ $('form').onsubmit = async e => {
 };
 
 fillForm(loadConfig());
+if (!new URLSearchParams(location.search).has('test')) autoMusic('page opened');
 
 // ---- self-check: open index.html?test ----
 if (new URLSearchParams(location.search).has('test')) {
@@ -570,6 +787,16 @@ if (new URLSearchParams(location.search).has('test')) {
   t(aimX({ choice: 'z1', probabilities: { z1: 0.5, z2: 0.5 } }) === 120, 'aimX weighted');
   t(aimX({ choice: 'z3', probabilities: {} }) === 210, 'aimX falls back to choice');
   t(aimX({ choice: 'z0', probabilities: { z0: 0.3, z4: 0.2, z5: 0.2, z6: 0.2, z7: 0.1 } }) === 30, 'aimX ignores far zones');
+  for (const [id, st] of Object.entries(MUSIC_STYLES)) {
+    t(Math.abs(st.bars * 4 * 60 / st.bpm - 20) < 1e-9, id + ' loops in 20 s');
+    t(Object.values(st.roots).length && Array.from({ length: st.bars }, (_, b) => st.tones[chordAt(st, b)] && st.roots[chordAt(st, b)]).every(Boolean), id + ' chords defined');
+    const qs = musicQuestions(st), mb = JSON.parse(buildRequest('openai', c0, trackState(st, 'test'), qs).init.body);
+    t(Object.keys(mb.response_format.questions).length === st.bars * 4 && Object.values(qs).every(q => q.criteria.rest), id + ' music request');
+  }
+  t([...document.getElementById('music').options].map(o => o.value).join() === 'arcade,synthwave,dungeon,boss,off', 'music dropdown');
+  const A = MUSIC_STYLES.arcade;
+  t(pickNote({ choice: 'C5', probabilities: { C5: 0.2, E5: 0.8 } }, A, () => 0.5) === 'E5', 'pickNote samples');
+  t(pickNote({ choice: 'C5', probabilities: {} }, A) === 'C5' && pickNote(undefined, A) === 'rest' && pickNote({ choice: 'X9' }, A) === 'rest', 'pickNote fallbacks');
   console.log(ok ? 'PASS' : 'FAIL');
   document.title = (ok ? 'PASS' : 'FAIL') + ' — BOOLS';
 }

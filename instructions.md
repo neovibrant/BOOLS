@@ -169,6 +169,55 @@ The setup screen is shown first. **The game stays hidden until a test call succe
   - The real zone's bar turns green.
 - Hits and misses, score and lives, tokens, errors and the last error.
 - The last 12 decisions.
+### Music
+
+The same model composes the soundtrack, live, as you play. It's a second showcase: one call answers 24–48 typed questions, one per melody note.
+
+**Styles** (dropdown on the settings screen and under the game, saved in `bools.config` as `music`). Every style loops in exactly **20 s**:
+
+| Style | Key, chords | Tempo, bars, notes | Sound |
+|---|---|---|---|
+| 🎮 Arcade chiptune (default) | A minor: Am F C G | 144 BPM, 12 bars, 48 notes | square lead, octave-bouncing triangle bass, steady beat |
+| 🌆 Synthwave chase | E minor: Em C G D | 96 BPM, 8 bars, 32 notes | sawtooth lead, pulsing saw bass, four-on-the-floor kick |
+| 🕯️ Dungeon crawl | D harmonic minor: Dm Bb Gm A Dm A | 72 BPM, 6 bars, 24 notes | long triangle lead, held bass, sparse kick and hat |
+| 🔥 Boss battle | E phrygian: Em Em F Em | 120 BPM, 10 bars, 40 notes | short square stabs, pulsing bass, double kick, constant hats |
+| 🔇 No music | | | no calls, audio suspended |
+
+**One call = one track.**
+- The request has one `choice` question per beat (`n00`, `n01`, …). The options are 8 notes from the style's scale plus `rest`.
+- Each question's instructions give the bar, the beat, the chord and its tones, plus the style's mood (e.g. "eerie, use rests, half steps and the dark C#"). The last bar is told to end on the tonic.
+- The state is `{music, key, tempo_bpm, bars, chords, event, track, score, lives}`.
+
+**Each note is sampled from the model's probabilities, not just its top choice.** The model returns nearly the same top choices for the same prompt, so without sampling every track would sound the same.
+
+**The browser plays it with Web Audio** (no library). The model writes only the melody. Bass and drums are fixed patterns per style that follow the chords.
+
+**When it composes:**
+- **On the settings screen, music starts as soon as it can:** a music style is selected and the form has a valid URL, a key and a model. With settings saved in `localStorage`, it composes as soon as the page opens.
+  - Browsers block sound until the first click or key press. Until then the status line says "Click anywhere to hear it."
+- **During play, the track loops with no further calls.** A new track is composed only on:
+  - game start, or Play again
+  - a lost life
+  - the next level (all bricks cleared)
+  - **⏭ Next track**
+  - changing the style
+- **At most one composition is in flight.** Triggers that arrive meanwhile are ignored. A style change made during composing is honoured once the current composition finishes.
+- **The new track takes over at the next bar line**, so the beat never breaks.
+- **On error, the current track keeps playing** and the error shows in the status line.
+- **Audio pauses** when the tab is hidden and on game over. Choosing **No music** suspends it and makes no calls.
+
+**Making it obvious the model composes:** the music box is labelled "Soundtrack, composed live by your model". It shows:
+- a live status, e.g. "✎ typesafe/jev-latest is composing a new boss battle track (lost life)… 180 ms", then "♪ Track #3, composed live by …: 40 notes in 232 ms, 8,300 tokens. Loops every 20 s with no new calls."
+- the track's notes, with the one playing now highlighted
+
+The same controls (one set of DOM elements) move between the settings screen and the game screen.
+
+**Measured on Jev via Requesty:** 230–400 ms per track. Tokens per track:
+- 24 notes: about 5,000
+- 32 notes: about 6,700
+- 48 notes: about 10,000 (≈ $0.0004)
+
+Tracks are composed only on the events above, so music costs far less than the paddle.
 
 ## 6. API formats
 
@@ -255,7 +304,11 @@ Keep it minimal. There is no framework and no build step.
 - `aimX(answer)`: the paddle target, weighted over the chosen zone and its neighbours.
 - `record()` / `score(x)`: speed stats when an answer arrives; accuracy when the ball crosses the paddle row.
 - `step()` / `draw()`: game physics and rendering.
-- **Self-check:** opening `index.html?test` runs `console.assert` checks on requests, answers, aiming and grading, and prints PASS or FAIL. There is no test framework.
+- `ask(state, questions, timeout)`: the shared request; `decide()` (paddle) and `requestTrack()` (music) both use it.
+- `MUSIC_STYLES`: one entry per style (tempo, bars, scale, chords, mood, sounds, drum pattern). Add a style here and as a dropdown option.
+- `requestTrack(reason)` / `pickNote()`: compose a track and sample each note. `musicTick()` / `playStep()`: the Web Audio scheduler, which queues about 200 ms ahead.
+- `apiCfg()` / `autoMusic()`: music before Play, using the form's values when they're complete.
+- **Self-check:** opening `index.html?test` runs `console.assert` checks on requests, answers, aiming and grading. It also checks that each style loops in 20 s and has every chord defined, the music requests, the dropdown and note sampling. It prints PASS or FAIL. There is no test framework.
 - **Local testing:** if you use a static server, turn caching off (e.g. `npx http-server public -c-1`), or the browser keeps running old code.
 
 ## 8. Cost
@@ -263,6 +316,7 @@ Keep it minimal. There is no framework and no build step.
 - One decision is about 370–400 input tokens (measured).
 - Requests go out only while the ball falls, at 2–5 per second, so roughly 2–4M tokens per hour of play. That's about **$0.10–0.20 per hour** on Jev, or **$0.20–0.35 per hour** on clef-flash.
 - Output tokens are free on all of these models.
+- Music: 5,000–10,000 input tokens per 20 s track (≈ $0.0002–0.0004 on Jev), only on the triggers listed in section 5. Music on the settings screen composes one track and loops it.
 
 ## 9. Security & privacy
 
