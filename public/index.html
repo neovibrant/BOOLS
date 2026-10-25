@@ -16,9 +16,10 @@
   .row input:not([type=checkbox]) { flex: 1; }
   .note { font-size: 12px; color: #999; }
   .err { color: #f77; white-space: pre-wrap; word-break: break-word; }
-  #game { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
-  canvas { background: #000; border: 1px solid #333; max-width: 100%; display: block; }
-  #hud { width: 340px; font: 12px ui-monospace, monospace; }
+  #game { display: flex; flex-direction: column; gap: 16px; }
+  #game > div { width: 100%; }
+  canvas { background: #000; border: 1px solid #333; width: 100%; height: auto; display: block; }
+  #hud { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 16px; font: 12px ui-monospace, monospace; }
   #stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0 0 10px; }
   #stats dt { color: #888; }
   #stats dd { margin: 0; word-break: break-word; }
@@ -70,8 +71,21 @@
   #setupMsg:empty { display: none; }
   .setup-footer { text-align: center; color: #858ca5; letter-spacing: 1px; margin: 24px 0 0; line-height: 1.8; }
   #game { max-width: 920px; margin: auto; }
+  #game > .setup-footer { width: 100%; }
   .music-box { display: grid; gap: 8px; padding: 12px; border: 1px dashed #4a5272; background: #12152255; }
-  #gameMusic .music-box { margin-top: 12px; max-width: 480px; }
+  #gameMusic { position: relative; flex-wrap: wrap; }
+  #musicDetail { border: 0; padding: 6px; background: none; color: #a5bfff; font-weight: normal; text-decoration: underline; }
+  #gameMusic .music-box { display: contents; }
+  #gameMusic .music-box label, #gameMusic .music-box .row { display: contents; }
+  #gameMusic #music { width: auto; max-width: 100%; }
+  #gameMusic .music-box label span, #gameMusic #vol, #gameMusic #nowPlaying, #gameMusic #notes { display: none; }
+  #musicClose { display: none; }
+  #gameMusic.music-expanded .music-box { display: grid; position: absolute; top: calc(100% + 8px); left: 0; z-index: 1; width: min(100%, 480px); background: #121522; box-shadow: 0 8px 24px #0008; }
+  #gameMusic.music-expanded .music-box label { display: grid; }
+  #gameMusic.music-expanded .music-box .row { display: flex; }
+  #gameMusic.music-expanded .music-box label span, #gameMusic.music-expanded #vol, #gameMusic.music-expanded #nowPlaying, #gameMusic.music-expanded #musicClose { display: block; }
+  #gameMusic.music-expanded #notes:not(:empty) { display: flex; }
+  #gameMusic.music-expanded #musicDetail { display: none; }
   .music-box label { display: grid; gap: 8px; font-size: 12px; font-weight: 600; color: #c5c9dc; }
   .music-box input[type=range] { flex: 1; padding: 0; min-height: 0; accent-color: #ffd17b; }
   .music-box .note { margin: 0; font-size: 11px; }
@@ -157,8 +171,8 @@
       </select>
     </label>
     <div id="musicBox" class="music-box">
-      <label>Soundtrack, composed live by your model
-        <select id="music">
+      <label><span>Soundtrack, composed live by your model</span>
+        <select id="music" aria-label="Soundtrack style">
           <option value="arcade">🎮 Arcade chiptune</option>
           <option value="synthwave">🌆 Synthwave chase</option>
           <option value="dungeon">🕯️ Dungeon crawl</option>
@@ -169,6 +183,7 @@
       <div class="row"><input type="range" id="vol" min="0" max="1" step="0.05" value="0.3" aria-label="Music volume"><button type="button" id="nextTrack" title="Ask the model to compose a new track">⏭ Next track</button></div>
       <p class="note" id="nowPlaying" aria-live="polite"></p>
       <div id="notes" aria-hidden="true"></div>
+      <button type="button" id="musicClose">Close</button>
     </div>
     <p class="note" id="key-notice">Your key is stored in this browser's localStorage and sent only to the URL above, never to this site.
       Anyone with access to this browser, or any script running on this page, could read it. Use a spending-limited key.</p>
@@ -177,23 +192,25 @@
     <p id="setupMsg" class="err" aria-live="polite"></p>
   </form>
   </div>
-  <p class="setup-footer">Powered by typed choices · Played by a model · Watched by you</p>
+  <p class="setup-footer">Built at <a href="https://iteratory.com">iteratory.com</a> / Iterate your skills</p>
 </section>
 
 <section id="game" hidden>
   <div>
     <canvas id="cv" width="480" height="480" aria-label="Breakout game played by the model"></canvas>
     <p class="note">Blue = zone the model chose. The game never predicts the ball; answers are scored after it reaches the paddle row.</p>
-    <div class="row"><button id="again" hidden>Play again</button><button id="settings">Settings</button></div>
-    <div id="gameMusic"></div>
+    <div id="gameMusic" class="row"><button id="again" hidden>Play again</button><button id="settings">Settings</button><button id="musicDetail" aria-expanded="false" aria-controls="musicBox">Show music panel</button></div>
   </div>
   <div id="hud" aria-live="off">
     <dl id="stats"></dl>
+    <div>
     <h2>Last answer: zone probabilities (green = where the last ball actually crossed)</h2>
     <div id="bars"></div>
     <h2>Recent decisions</h2>
     <div id="log"></div>
+    </div>
   </div>
+  <p class="setup-footer">Built at <a href="https://iteratory.com">iteratory.com</a> / Iterate your skills</p>
 </section>
 
 <script>
@@ -683,7 +700,8 @@ function start() {
   stats = newStats(); newGame();
   running = true; loopId++; lastT = performance.now();
   $('setup').hidden = true; $('game').hidden = false;
-  $('gameMusic').append($('musicBox'));   // one set of music controls, moved between screens
+  $('musicDetail').before($('musicBox'));   // one set of music controls, moved between screens
+  setMusicDetail(false);
   requestAnimationFrame(frame);
   decisionLoop(loopId);
   syncAudio(); requestTrack('game start');
@@ -732,6 +750,12 @@ $('forget').onclick = () => {
   music.track = music.next = null;
 };
 $('settings').onclick = stop;
+function setMusicDetail(expanded) {
+  $('gameMusic').classList.toggle('music-expanded', expanded);
+  $('musicDetail').setAttribute('aria-expanded', expanded);
+}
+$('musicDetail').onclick = () => { setMusicDetail(true); $('musicClose').focus(); };
+$('musicClose').onclick = () => { setMusicDetail(false); $('musicDetail').focus(); };
 $('again').onclick = () => { newGame(); syncAudio(); requestTrack('new game'); };
 $('music').onchange = e => {
   music.style = e.target.value;
