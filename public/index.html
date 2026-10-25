@@ -29,19 +29,102 @@
   #log { white-space: pre; color: #aaa; }
   h2 { font-size: 12px; color: #888; font-weight: normal; margin: 0 0 4px; }
   [hidden] { display: none !important; }
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { background: #0c0e18; color: #e5e6ee; padding: 36px 20px; }
+  #setup { max-width: 920px; margin: auto; }
+  .masthead, .eyebrow, .panel-title, .setup-footer { font: 11px ui-monospace, monospace; text-transform: uppercase; letter-spacing: 2px; }
+  .masthead { display: flex; justify-content: space-between; gap: 16px; color: #969bad; border-bottom: 1px solid #292d40; padding-bottom: 18px; }
+  .masthead span:last-child { color: #95d8b0; }
+  .splash { text-align: center; padding: 42px 0 30px; position: relative; }
+  .splash::before { content: ''; position: absolute; inset: 15px 0; z-index: -1; background: radial-gradient(ellipse, #30304b66, transparent 68%); }
+  .eyebrow { color: #a5a9bb; margin: 0 0 22px; }
+  .logo { display: block; width: min(100%, 460px); height: auto; margin: auto; overflow: visible; filter: drop-shadow(0 6px 0 #812e43) drop-shadow(0 10px 0 #311e36); }
+  .splash h1 { margin: 26px 0 12px; font: bold 12px ui-monospace, monospace; letter-spacing: 3px; text-transform: uppercase; color: #ffda87; }
+  .splash p:last-child { color: #aaaec1; line-height: 1.7; margin: 0; }
+  .setup-grid { display: grid; grid-template-columns: 1fr 1.25fr; border: 1px solid #363a51; box-shadow: 6px 6px 0 #060810; }
+  .intro { padding: 28px; background: #121522; border-right: 1px solid #363a51; }
+  .panel-title { color: #ffd17b; margin: 0 0 20px; font-weight: bold; }
+  .arcade-art { width: 100%; display: block; margin: 28px 0; }
+  .intro h2 { color: #eeeef5; font-size: 20px; font-weight: 650; margin: 0 0 12px; }
+  .intro p { color: #a6abc0; font-size: 13px; line-height: 1.8; }
+  .intro .how { border-top: 1px solid #2b3044; margin-top: 22px; padding-top: 18px; font: 11px/1.9 ui-monospace, monospace; color: #95d8b0; }
+  #form { max-width: none; padding: 28px; gap: 16px; background: #191c2b; }
+  #form .panel-title { margin-bottom: 4px; }
+  #form label { font-size: 12px; font-weight: 600; gap: 8px; color: #c5c9dc; }
+  input, select, button { min-height: 42px; border-radius: 0; }
+  input, select { min-width: 0; width: 100%; background: #0e111d; border-color: #383e56; padding: 10px 12px; font: 12px ui-monospace, monospace; }
+  input::placeholder { color: #777f99; }
+  input[type=checkbox] { width: 15px; min-height: 15px; accent-color: #ffd17b; }
+  :focus-visible { outline: 2px solid #ffda87; outline-offset: 3px; }
+  .key-field { display: grid; gap: 8px; }
+  #form .show-key { flex-direction: row; display: flex; gap: 6px; padding: 0 4px; }
+  .note { color: #a2a8bf; line-height: 1.65; }
+  #form .note { font-size: 11px; margin: 0; }
+  .actions { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
+  button { background: #222739; border-color: #454d68; padding: 10px 16px; font: bold 12px ui-monospace, monospace; }
+  button:hover { background: #30374d; }
+  #play { background: #ffd17b; color: #252031; border: 1px solid #ffe8b9; box-shadow: 0 3px 0 #9e6941; text-transform: uppercase; letter-spacing: 1px; }
+  #play:hover { background: #ffe2a6; }
+  #setupMsg { margin: 0; font-size: 12px; }
+  #setupMsg:empty { display: none; }
+  .setup-footer { text-align: center; color: #858ca5; letter-spacing: 1px; margin: 24px 0 0; line-height: 1.8; }
+  #game { max-width: 920px; margin: auto; }
+  @media (max-width: 640px) {
+    body { padding: 22px 16px; }
+    .masthead { font-size: 9px; letter-spacing: 1px; }
+    .splash { padding: 32px 8px; }
+    .splash h1 { font-size: 10px; letter-spacing: 1px; }
+    .setup-grid { grid-template-columns: 1fr; }
+    .intro { border-right: 0; border-bottom: 1px solid #363a51; padding: 22px; }
+    .arcade-art { max-width: 260px; margin: 20px auto; }
+    #form { padding: 22px; }
+  }
 </style>
 </head>
 <body>
 
 <section id="setup">
-  <h1>BOOLS — Break Out Of Llm Slowness</h1>
-  <p class="note">A System One decision model plays Breakout. It returns a typed choice, not text.</p>
+  <header class="masthead"><span>System One / Arcade demo</span><span>Model plays. You watch.</span></header>
+  <div class="splash">
+    <p class="eyebrow">Less talk. More breakout.</p>
+    <svg class="logo" viewBox="0 0 290 70" role="img" aria-label="BOOLS" shape-rendering="crispEdges">
+      <defs><linearGradient id="logo-fill" x2="0" y2="1"><stop stop-color="#fff2b0"/><stop offset=".48" stop-color="#ffd56e"/><stop offset=".49" stop-color="#ffae58"/><stop offset="1" stop-color="#f57557"/></linearGradient></defs>
+      <g fill="url(#logo-fill)" fill-rule="evenodd">
+        <path d="M0 0H40V10H50V30H40V40H50V60H40V70H0ZM10 10V30H35V10ZM10 40V60H35V40Z"/>
+        <path d="M70 0H100V10H110V60H100V70H70V60H60V10H70ZM75 10V60H95V10Z"/>
+        <path d="M130 0H160V10H170V60H160V70H130V60H120V10H130ZM135 10V60H155V10Z"/>
+        <path d="M180 0H195V55H230V70H180Z"/>
+        <path d="M250 0H290V15H250V25H280V35H290V60H280V70H240V55H275V45H250V35H240V10H250Z"/>
+      </g>
+    </svg>
+    <h1>Break Out Of Llm Slowness</h1>
+    <p>A ball. A paddle. A model with reflexes.<br>Typed decisions, fast enough to play.</p>
+  </div>
+  <div class="setup-grid">
+  <aside class="intro">
+    <div class="panel-title">01 / Meet your player</div>
+    <svg class="arcade-art" viewBox="0 0 280 146" aria-hidden="true" shape-rendering="crispEdges">
+      <defs><pattern id="bricks" width="40" height="18" patternUnits="userSpaceOnUse"><path d="M1 1H37V15H1Z" fill="currentColor"/><path d="M3 3H35" stroke="#ffffff" stroke-opacity=".25" stroke-width="2"/></pattern></defs>
+      <g fill="url(#bricks)"><path d="M0 0H280V18H0Z" color="#ed796f"/><path d="M0 18H280V36H0Z" color="#e8af68"/><path d="M0 36H80V54H0ZM120 36H240V54H120Z" color="#8ebba4"/></g>
+      <path d="M139 65L166 92L150 108" fill="none" stroke="#555e7c" stroke-width="2" stroke-dasharray="4 5"/>
+      <path d="M143 108H151V116H143Z" fill="#ffe1a0"/><path d="M118 132H180V140H118Z" fill="#b5baf3"/>
+      <path d="M0 145H280" stroke="#343a52"/>
+    </svg>
+    <h2>Your model takes the controls.</h2>
+    <p>A System One decision model reads the game state and chooses where the paddle should go. No generated text. Just a typed answer, and the next move.</p>
+    <p class="how">8 zones. One choice. Every bounce.<br>You bring the API key. Jev brings the reflexes.</p>
+    <p class="note">Default: Jev via Requesty.<br>Estimated play cost: $0.10–0.20 / hour.</p>
+  </aside>
   <form id="form">
-    <label>API URL <input id="url" required></label>
+    <div class="panel-title">02 / Player settings</div>
+    <label>API URL <input id="url" required spellcheck="false" placeholder="https://router.requesty.ai/v1"></label>
+    <div class="key-field">
     <label for="key">API key</label>
     <div class="row">
-      <input id="key" type="password" autocomplete="off" spellcheck="false">
-      <label class="row"><input type="checkbox" id="show"> Show</label>
+      <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Your provider's API key" aria-describedby="key-notice">
+      <label class="show-key"><input type="checkbox" id="show"> Show</label>
+    </div>
     </div>
     <label>Model <input id="model" required autocomplete="off"></label>
     <datalist id="requestyModels">
@@ -58,17 +141,20 @@
       <option value="azure/decision-1@francecentral">
       <option value="azure/decision-1@swedencentral">
     </datalist>
-    <label>Style
+    <label>API style
       <select id="style">
         <option value="openai">OpenAI-compatible (Requesty, etc.)</option>
         <option value="systemone" disabled>System One (Jev native) — coming soon</option>
       </select>
     </label>
-    <p class="note">Your key is stored in this browser's localStorage and sent only to the URL above, never to this site.
+    <p class="note" id="key-notice">Your key is stored in this browser's localStorage and sent only to the URL above, never to this site.
       Anyone with access to this browser, or any script running on this page, could read it. Use a spending-limited key.</p>
-    <div class="row"><button id="play">Play</button><button type="button" id="forget">Forget</button></div>
+    <div class="actions"><button id="play">▶ Start game</button><button type="button" id="forget">Forget</button></div>
+    <p class="note">One test decision, then your model takes over.</p>
     <p id="setupMsg" class="err" aria-live="polite"></p>
   </form>
+  </div>
+  <p class="setup-footer">Powered by typed choices · Played by a model · Watched by you</p>
 </section>
 
 <section id="game" hidden>
