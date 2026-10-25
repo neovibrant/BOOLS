@@ -1,5 +1,6 @@
 {
   "name": "bools",
   "compatibility_date": "2026-10-25",
-  "assets": { "directory": "./public" }
+  "assets": { "directory": "./public" },
+  "routes": [{ "pattern": "bools.iteratory.com", "custom_domain": true }]
 }

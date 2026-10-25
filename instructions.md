@@ -21,14 +21,15 @@ The point it makes: a model that *returns a typed choice* instead of *generating
 
 ## 2. Model & provider
 
-- **Default model: `cloudflare/clef-flash` via Requesty** (`https://router.requesty.ai/v1`).
+- **Default model: `typesafe/jev-latest` via Requesty** (`https://router.requesty.ai/v1`). In our tests it was the fastest (~200 ms from Europe) and the only one that handled wall bounces reasonably from the raw state.
+- `cloudflare/clef-flash`:
   - A 9B open-weights (Apache 2.0) decision model from Cloudflare, compatible with the Jev API. It also accepts images.
   - Price: about $0.09 per 1M input tokens. Output is free.
   - Cloudflare reports a model latency of about 39 ms median and 122 ms p95. Network time is extra.
   - Requesty lists it as **served from the US only**, so users outside the US pay the transatlantic round trip.
   - Requesty's decisions docs list `cloudflare/clef` but not `clef-flash` explicitly. The model page says it's the same kind of model. If it fails, the first test call will show the error.
 - Other decision models on Requesty, usable by changing the model field:
-  - `typesafe/jev-latest`: Requesty measured about 75 ms median for the latest week and 116 ms from the US. Expect about 220–240 ms from Europe or Asia Pacific, because Jev is hosted only on the US West Coast.
+  - `typesafe/jev-latest` (default): Requesty measured about 75 ms median for the latest week and 116 ms from the US. Expect about 220–240 ms from Europe or Asia Pacific, because Jev is hosted only on the US West Coast.
   - `cloudflare/clef`: 27B, about 209 ms median by Cloudflare's own figures.
   - `perplexity/pplx-decider-v1-27b`: no published latency.
 - Other places to find decision models, which users can enter themselves:
@@ -54,9 +55,10 @@ The point it makes: a model that *returns a typed choice* instead of *generating
 ### Files
 
 ```
-public/index.html   # the entire app: setup form, game, API client (plain JS, no build step)
-wrangler.jsonc      # static-assets Worker config
-instructions.md     # this document
+public/index.html             # the entire app: setup form, game, API client (plain JS, no build step)
+wrangler.jsonc                # static-assets Worker config
+.github/workflows/deploy.yml  # deploys on push to main
+instructions.md               # this document
 ```
 
 `wrangler.jsonc`:
@@ -65,11 +67,14 @@ instructions.md     # this document
 {
   "name": "bools",
   "compatibility_date": "2026-10-25",
-  "assets": { "directory": "./public" }
+  "assets": { "directory": "./public" },
+  "routes": [{ "pattern": "bools.iteratory.com", "custom_domain": true }]
 }
 ```
 
-- Deploy with `npx wrangler deploy`. The site is served at `bools.<account>.workers.dev`.
+- **Deploy:** every push to `main` runs the GitHub Action, which runs `wrangler deploy`. It can also be run by hand from the Actions tab.
+  - It needs two secrets in the GitHub environment `prod`: `CLOUDFLARE_API_TOKEN` (Edit Cloudflare Workers template, limited to the account and the `iteratory.com` zone) and `CLOUDFLARE_ACCOUNT_ID`.
+- The site is served at `https://bools.iteratory.com` and at `bools.<account>.workers.dev`. Wrangler creates the DNS record and certificate.
 - To run locally, run `npx wrangler dev` or open `public/index.html` from any static server.
 - There are no npm dependencies.
 
@@ -81,7 +86,7 @@ The setup screen is shown first. **The game stays hidden until a test call succe
 |---|---|---|
 | **API URL** | `https://router.requesty.ai/v1` | Base URL. Must start with `https://` or `http://`. Requesty or any compatible provider. |
 | **API key** | (empty) | Password field with a **Show** toggle. `autocomplete="off"`. |
-| **Model** | `cloudflare/clef-flash` | Needed because every request names a model, and model IDs differ between providers. |
+| **Model** | `typesafe/jev-latest` | Needed because every request names a model, and model IDs differ between providers. |
 | **Style** | OpenAI-compatible | Dropdown, described below. |
 
 **Style options:**
@@ -111,21 +116,29 @@ The setup screen is shown first. **The game stays hidden until a test call succe
 - **Only one request is in flight at a time.**
   - As soon as an answer arrives, the next request is sent with the current state.
   - The rate is therefore set by latency: about 3–10 decisions per second.
-- **Between answers, the paddle keeps sliding** toward the center of the last chosen zone at a fixed paddle speed.
+- **Requests are sent only while the ball is falling.** Answers that arrive after the ball has turned around are ignored.
+- **Between answers, the paddle keeps sliding** toward its aim at a fixed paddle speed. The aim is the probability-weighted centre of the chosen zone and its two neighbours, so when the model is torn between neighbouring zones the paddle sits between them.
+- **The game never predicts the ball itself.** All paddle movement comes from the model.
 - **On error** (network, HTTP status, bad JSON, or a missing answer):
   - The paddle holds its last target.
   - The error is shown in the HUD.
-  - The loop retries on the next tick.
+  - The loop waits 1 s, or the `Retry-After` value, before retrying.
+- The loop pauses while the tab is hidden and after game over.
   - Nothing crashes.
 
 ### HUD (on-screen stats)
 
-- Model name.
-- Last choice, its confidence, and a small probability bar for each zone.
-- Last latency and a rolling average latency in ms.
-- Decision count.
-- Hits and misses: a hit is a paddle contact and a miss is a lost ball.
-- Last error, if any.
+- Model, endpoint, and loop status (request in flight, waiting, backing off, paused).
+- Decisions, and decisions per second while the ball falls.
+- Latency: last, average, p50/p95, min/max.
+- Time to spare (from the last answer to the ball crossing), and answers that came too late.
+- Last answer with its confidence, and a probability bar for each zone.
+- **Accuracy, graded after the fact:** when the ball crosses the paddle row, every answer from that descent is compared with the real crossing zone.
+  - Shown as exact and ±1 zone, overall and by distance (near, mid, far).
+  - Also shown: how often the aim was within paddle reach.
+  - The real zone's bar turns green.
+- Hits and misses, score and lives, tokens, errors and the last error.
+- The last 12 decisions.
 
 ## 6. API formats
 
@@ -139,17 +152,17 @@ Headers: `Authorization: Bearer {key}`, `Content-Type: application/json`
 
 ```json
 {
-  "model": "cloudflare/clef-flash",
+  "model": "typesafe/jev-latest",
   "messages": [
     { "role": "user",
-      "content": "{\"ball\":{\"x\":312,\"y\":140,\"vx\":3,\"vy\":4},\"paddle\":{\"x\":200,\"y\":440,\"width\":70},\"field\":{\"width\":480,\"height\":480}}" }
+      "content": "{\"ball\":{\"x\":312,\"y\":140,\"vx\":90,\"vy\":120},\"paddle\":{\"x\":200,\"y\":440,\"width\":70},\"field\":{\"width\":480,\"height\":480}}" }
   ],
   "response_format": {
     "type": "questions",
     "questions": {
       "zone": {
         "type": "choice",
-        "instructions": "Where will the ball cross the paddle row (y = paddle.y)? Account for bounces off the left and right walls.",
+        "instructions": "Ball x,y is its center, velocities are px per second, y grows downward. Where will the ball cross the paddle row (y = paddle.y)? Account for bounces off the left (x=0) and right (x=field.width) walls.",
         "criteria": {
           "z0": "x 0-60", "z1": "x 60-120", "z2": "x 120-180", "z3": "x 180-240",
           "z4": "x 240-300", "z5": "x 300-360", "z6": "x 360-420", "z7": "x 420-480"
@@ -184,7 +197,7 @@ Headers: `Authorization: Bearer {key}`, `Content-Type: application/json`
 ```json
 {
   "model": "jev-latest",
-  "state": { "ball": {"x":312,"y":140,"vx":3,"vy":4}, "paddle": {"x":200,"y":440,"width":70}, "field": {"width":480,"height":480} },
+  "state": { "ball": {"x":312,"y":140,"vx":90,"vy":120}, "paddle": {"x":200,"y":440,"width":70}, "field": {"width":480,"height":480} },
   "questions": { "zone": { "type": "choice", "instructions": "...", "criteria": { "z0": "x 0-60", "...": "..." } } }
 }
 ```
