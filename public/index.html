@@ -28,6 +28,7 @@
   #bars i { width: 100%; background: #4af; min-height: 1px; }
   #bars .truth i { background: #4c4; }
   #log { white-space: pre; color: #aaa; }
+  #versions, #promptText { white-space: pre-wrap; word-break: break-word; color: #aaa; margin-bottom: 10px; }
   h2 { font-size: 12px; color: #888; font-weight: normal; margin: 0 0 4px; }
   [hidden] { display: none !important; }
   :root { color-scheme: dark; }
@@ -59,7 +60,9 @@
   input[type=checkbox] { width: 15px; min-height: 15px; accent-color: #ffd17b; }
   :focus-visible { outline: 2px solid #ffda87; outline-offset: 3px; }
   .key-field { display: grid; gap: 8px; }
-  #form .show-key { flex-direction: row; display: flex; gap: 6px; padding: 0 4px; }
+  #form .show-key, #form .check { flex-direction: row; display: flex; gap: 6px; padding: 0 4px; }
+  #coachBox { display: grid; gap: 16px; padding-left: 12px; border-left: 1px solid #383e56; }
+  #form:not(:has(#useCoach:checked)) #coachBox { display: none; }
   .note { color: #a2a8bf; line-height: 1.65; }
   #form .note { font-size: 11px; margin: 0; }
   .actions { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
@@ -185,7 +188,16 @@
       <div id="notes" aria-hidden="true"></div>
       <button type="button" id="musicClose">Close</button>
     </div>
-    <p class="note" id="key-notice">Your key is stored in this browser's localStorage and sent only to the URL above, never to this site.
+    <label class="check" id="coachToggle"><input type="checkbox" id="useCoach" aria-controls="coachBox"> Use a coach</label>
+    <div id="coachBox">
+      <label>Coach API URL <input id="coachUrl" spellcheck="false" placeholder="empty = same as API URL"></label>
+      <label>Coach API key <input id="coachKey" type="password" autocomplete="off" spellcheck="false" placeholder="empty = same as API key"></label>
+      <label>Coach model <input id="coach" autocomplete="off" spellcheck="false" placeholder="a normal chat LLM"></label>
+      <label>Custom header name <input id="coachHeader" autocomplete="off" spellcheck="false" placeholder="optional, e.g. X-Api-Token"></label>
+      <label>Custom header value <input id="coachHeaderValue" type="password" autocomplete="off" spellcheck="false" placeholder="optional"></label>
+      <p class="note">OpenAI-compatible chat API. After every miss the coach reads every prompt tried so far, with all the catches and misses each one played, and rewrites the paddle prompt. Prompts and play history are saved in this browser. The custom header is sent only to the coach; your server must allow it in CORS.</p>
+    </div>
+    <p class="note" id="key-notice">Your keys are stored in this browser's localStorage and sent only to the URLs above, never to this site.
       Anyone with access to this browser, or any script running on this page, could read it. Use a spending-limited key.</p>
     <div class="actions"><button id="play">▶ Start game</button><button type="button" id="forget">Forget</button></div>
     <p class="note">One test decision, then your model takes over.</p>
@@ -209,6 +221,13 @@
     <h2>Recent decisions</h2>
     <div id="log"></div>
     </div>
+    <div>
+    <h2>Coach: <span id="coachStatus"></span></h2>
+    <h2>Prompt in use</h2>
+    <div id="promptText"></div>
+    <details><summary>All prompt versions</summary><div id="versions"></div></details>
+    <button type="button" id="resetPrompts">Reset to original prompt</button>
+    </div>
   </div>
   <p class="setup-footer">Built at <a href="https://iteratory.com">iteratory.com</a> / Iterate your skills</p>
 </section>
@@ -222,7 +241,7 @@ const PADDLE_W = 70, PADDLE_H = 10, PADDLE_Y = 440, R = 6;
 const CATCH_Y = PADDLE_Y - R;   // ball centre when its bottom touches the paddle top: where a catch or miss is decided
 const TIMEOUT_MS = 5000, ERROR_BACKOFF_MS = 1000;
 const CFG_KEY = 'bools.config';
-const DEFAULTS = { url: 'https://router.requesty.ai/v1', key: '', model: 'typesafe/jev-latest', style: 'openai', music: 'arcade' };
+const DEFAULTS = { url: 'https://router.requesty.ai/v1', key: '', model: 'typesafe/jev-latest', useCoach: false, coach: '', coachUrl: '', coachKey: '', coachHeader: '', coachHeaderValue: '', style: 'openai', music: 'arcade' };
 // Original prompt (v0). The tuned versions (v9, v10) scored better in the benchmark but played worse live; see instructions.md, "Prompt tuning".
 const QUESTION = {
   type: 'choice',
@@ -231,13 +250,32 @@ const QUESTION = {
   criteria: Object.fromEntries(ZONE_IDS.map((z, i) => [z, `x ${i * ZW}-${(i + 1) * ZW}`])),
 };
 
+// ---- prompt versions: v0 is QUESTION; the coach LLM adds more. Only the instructions change; zones stay fixed. ----
+const PROMPTS_KEY = 'bools.prompts', COACH_TIMEOUT_MS = 120000, MAX_PROMPT = 1500;
+const newVersion = (instructions, parent = null, why = 'original prompt') => ({ instructions, parent, why, at: Date.now(), n: 0, correct: 0, pm1: 0, nearN: 0, nearCorrect: 0, caught: 0, missed: 0 });
+// prompts.descents: one record per fall, with every decision, kept for the coach. See recordDescent().
+const loadPrompts = () => { try { const p = JSON.parse(localStorage.getItem(PROMPTS_KEY)); if (p.list[p.cur]) return { descents: [], dropped: 0, ...p }; } catch {} return { list: [newVersion(QUESTION.instructions)], cur: 0, descents: [], dropped: 0 }; };
+let prompts = loadPrompts();
+// ponytail: localStorage (~5 MB, roughly 5 h of play). When full, drop the oldest 10% of descents; move to IndexedDB if that bites.
+function savePrompts() {
+  for (;;) {
+    try { return localStorage.setItem(PROMPTS_KEY, JSON.stringify(prompts)); }
+    catch (e) {
+      if (!prompts.descents.length) throw e;
+      const k = Math.ceil(prompts.descents.length / 10);
+      prompts.descents.splice(0, k); prompts.dropped += k;
+    }
+  }
+}
+const question = () => ({ ...QUESTION, instructions: prompts.list[prompts.cur].instructions });
+
 // ---- config ----
 const loadConfig = () => { try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(CFG_KEY)) }; } catch { return { ...DEFAULTS }; } };
 const saveConfig = c => localStorage.setItem(CFG_KEY, JSON.stringify(c));
 const clearConfig = () => localStorage.removeItem(CFG_KEY);
 
 // ---- API ----
-function buildRequest(style, cfg, state, questions = { zone: QUESTION }) {
+function buildRequest(style, cfg, state, questions = { zone: question() }) {
   const base = cfg.url.replace(/\/+$/, '');
   const sys1 = style === 'systemone';
   const body = sys1
@@ -262,12 +300,16 @@ function readAnswer(style, json) {
 }
 
 async function decide(state) {
-  const r = await ask(state);
-  return { ...readAnswer(cfg.style, r.json), ms: r.ms, tokens: r.tokens };
+  const v = prompts.cur, r = await ask(state);
+  return { ...readAnswer(cfg.style, r.json), ms: r.ms, tokens: r.tokens, v };
 }
 
-async function ask(state, questions, timeout = TIMEOUT_MS, c = cfg) {
+function ask(state, questions, timeout = TIMEOUT_MS, c = cfg) {
   const { url, init } = buildRequest(c.style, c, state, questions);
+  return post(url, init, timeout);
+}
+
+async function post(url, init, timeout) {
   const t0 = performance.now();
   let res;
   try { res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeout) }); }
@@ -305,13 +347,15 @@ function makeBricks() {
 }
 
 function newGame() {
-  game = { score: 0, lives: 3, bricks: makeBricks(), paddle: { x: W / 2, target: W / 2 }, targetZone: null, descent: 0, pending: [], crossed: false, over: false };
+  game = { score: 0, lives: 5, bricks: makeBricks(), paddle: { x: W / 2, target: W / 2 }, targetZone: null, descent: 0, pending: [], crossed: false, over: false };
   resetBall();
 }
 
 function resetBall() {
-  game.ball = { x: game.paddle.x, y: PADDLE_Y - R - 1, vx: 0, vy: 0 };
-  game.launchAt = performance.now() + 1000;
+  const g = game;
+  g.ball = { x: g.paddle.x, y: PADDLE_Y - R - 1, vx: 0, vy: 0 };
+  g.launchAt = coach.busy ? Infinity : performance.now() + 1000;
+  if (coach.busy) coach.p.finally(() => { g.launchAt = performance.now() + 1000; });
 }
 
 function hitBrick() {
@@ -350,8 +394,9 @@ function step(dt) {
   if (b.y < R) { b.y = R; b.vy = Math.abs(b.vy); }
 
   const crossing = b.vy > 0 && y0 < CATCH_Y && b.y >= CATCH_Y;
-  if (crossing) score(b.x);
-  if (crossing && Math.abs(b.x - p.x) <= PADDLE_W / 2 + R) {
+  const caught = crossing && Math.abs(b.x - p.x) <= PADDLE_W / 2 + R;
+  if (crossing) score(b.x, caught);
+  if (caught) {
     const a = Math.max(-1, Math.min(1, (b.x - p.x) / (PADDLE_W / 2))) * Math.PI / 3;
     b.vx = BALL_SPEED * Math.sin(a); b.vy = -BALL_SPEED * Math.cos(a);
     b.y = PADDLE_Y - R;
@@ -362,7 +407,10 @@ function step(dt) {
     if (--g.lives <= 0) { g.over = true; syncAudio(); } else { resetBall(); requestTrack('life lost'); }
     return;
   }
-  if (wasFalling !== b.vy > 0) newDescent();
+  if (wasFalling !== b.vy > 0) {
+    newDescent();
+    if (b.vy > 0) g.fallStart = { score: g.score, lives: g.lives, bricks: g.bricks.length, paddle: Math.round(p.x) };
+  }
 }
 
 function newDescent() { game.descent++; game.pending = []; game.crossed = false; }
@@ -445,7 +493,7 @@ const musicQuestions = st => Object.fromEntries(Array.from({ length: st.bars * 4
 
 const trackState = (st, reason) => ({ music: st.name, key: st.key, tempo_bpm: st.bpm, bars: st.bars,
   chords: Array.from({ length: st.bars }, (_, b) => chordAt(st, b)), event: reason, track: music.n + 1,
-  score: game?.score ?? 0, lives: game?.lives ?? 3 });
+  score: game?.score ?? 0, lives: game?.lives ?? 5 });
 
 // Sample from the model's probabilities, so every track differs even for the same state.
 function pickNote(a, st, rnd = Math.random) {
@@ -570,14 +618,14 @@ function record(r, aim, state) {
   s.n++;
   s.lat.push(r.ms); if (s.lat.length > 100) s.lat.shift();
   s.tokens += r.tokens;
-  const e = { ...r, aim, n: s.n, at: performance.now(), band: BANDS.find(([, max]) => PADDLE_Y - state.ball.y < max)[0], truth: null, diff: null };
+  const e = { ...r, aim, state, n: s.n, at: performance.now(), band: BANDS.find(([, max]) => PADDLE_Y - state.ball.y < max)[0], truth: null, diff: null };
   s.last = e;
   s.log.unshift(e); if (s.log.length > 12) s.log.pop();
   return e;
 }
 
 // The ball just crossed the paddle row at x: grade every answer given during this descent.
-function score(x) {
+function score(x, caught) {
   const s = stats, truth = zoneOf(x), now = performance.now();
   game.crossed = true;
   game.lastCross = { x, zone: truth, at: now };   // drawn on the catch line for a moment, after the fact
@@ -590,14 +638,113 @@ function score(x) {
     if (e.diff <= 1) { s.near++; band.near++; }
     if (Math.abs(e.aim - x) <= PADDLE_W / 2 + R) s.reach++;
     s.aimErr += Math.abs(e.aim - x);
+    const pv = prompts.list[e.v];
+    if (pv) {
+      pv.n++; pv.correct += e.diff === 0; pv.pm1 += e.diff <= 1;
+      if (e.band === 'near') { pv.nearN++; pv.nearCorrect += e.diff === 0; }
+    }
   }
+  recordDescent(x, caught);
   game.pending = [];
+  if (!caught) runCoach();
+}
+
+// One record per fall: play context, every decision (with the paddle position when asked), and the outcome.
+// d: [version, ball x, ball y, vx, vy, paddle x, choice, confidence %]
+function recordDescent(x, caught) {
+  const p = game.paddle, last = game.pending.at(-1), v = last ? last.v : prompts.cur;
+  prompts.descents.push({ v, ctx: game.fallStart || null, caught, x: Math.round(x), px: Math.round(p.x),
+    d: game.pending.map(e => { const b = e.state.ball; return [e.v, b.x, b.y, b.vx, b.vy, e.state.paddle.x, e.choice, Math.round((e.confidence ?? 0) * 100)]; }) });
+  const pv = prompts.list[v];
+  if (pv) caught ? pv.caught++ : pv.missed++;
+  savePrompts();
+}
+
+// ---- coach: on every miss, a normal LLM reads the whole history and rewrites the paddle prompt (System 2 teaching System 1) ----
+const coach = { busy: 0, error: '', tokens: 0, calls: 0 };
+const vStats = p => `${p.caught} caught / ${p.missed} missed, answers exact ${pct(p.correct, p.n)}, ±1 ${pct(p.pm1, p.n)}, near-paddle exact ${pct(p.nearCorrect, p.nearN)} (n=${p.n})`;
+const descentLine = s => {
+  const c = s.ctx ? `score ${s.ctx.score}, lives ${s.ctx.lives}, bricks ${s.ctx.bricks}, paddle starts x=${s.ctx.paddle}` : 'no context';
+  const d = s.d.map(([v, x, y, vx, vy, px, ch, cf]) => `${v === s.v ? '' : `[v${v}] `}${x},${y},${vx},${vy} p${px}→${ch} ${cf}%`).join('; ') || 'no answer in time';
+  return `${c} | ${d} | crossed x=${s.x} (z${zoneOf(s.x)}), paddle x=${s.px} → ${s.caught ? 'CAUGHT' : 'MISSED'}`;
+};
+
+function coachPrompt() {
+  const cur = prompts.cur;
+  return `You are coaching "${cfg.model}", a fast System One decision model that plays Breakout in real time. ` +
+`It cannot reason step by step or write text: for each game state it only returns one choice from fixed options, with probabilities.
+
+Each call it gets this JSON state (example): ${JSON.stringify(SAMPLE_STATE)}
+and this question: {"type":"choice","instructions":<THE PROMPT>,"criteria":${JSON.stringify(QUESTION.criteria)}}
+
+Real physics, for your understanding: the ball (radius ${R}) is caught or missed when its center reaches y=${CATCH_Y}. ` +
+`Its center bounces off the walls at x=${R} and x=${W - R}. Velocities are px/s, y grows downward.
+
+How the game uses its answers: it asks again as soon as each answer arrives (about ${Math.round(quant(stats.lat, 0.5) || 250)} ms per answer), ` +
+`only while the ball falls. The paddle (${PADDLE_W} px wide) slides toward the chosen zone at ${PADDLE_SPEED} px/s; the ball moves at ${BALL_SPEED} px/s.
+A miss is not always a wrong answer: the right answer may have come too late, or the paddle may have started too far away to get there. ` +
+`Compare the paddle x at each decision with where the ball crossed before blaming the prompt.
+
+The ball was just missed. Your job: write better instructions so it picks the right zone more often, especially near the paddle. Rules:
+- The instructions are the same fixed text for every state. Explain, give rules or worked examples, but you never see the live state.
+- At most ${MAX_PROMPT} characters; longer is slower and costlier.
+- Its known weakness: it reads direction well but not distance or bounces, and often picks the wall the ball heads toward.
+
+Every version tried so far, each with its live totals and the full history of falls it played (small numbers are noisy).
+One line per fall: play context | decisions in order, each "ball x,y,vx,vy p<paddle x when asked>→<chosen zone> <confidence>" ` +
+`([vN] marks an answer from another version) | outcome.${prompts.dropped ? ` The oldest ${prompts.dropped} falls were dropped for storage.` : ''}
+${prompts.list.map((p, i) => `
+=== v${i}${i === cur ? ' (in use)' : ''}${p.parent == null ? '' : ', built on v' + p.parent}: ${vStats(p)}
+Why: ${p.why}
+Instructions: ${p.instructions}
+Falls:
+${prompts.descents.filter(s => s.v === i).map(descentLine).join('\n') || '(none)'}`).join('\n')}
+
+Reply with only JSON: {"base": <version number to build on>, "instructions": "<new instructions, or empty to switch back to the base version as is>", "why": "<one short sentence for the player>"}`;
+}
+
+function parseCoach(text) {
+  const j = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+  if (!prompts.list[j.base]) throw new Error('coach picked unknown version v' + j.base);
+  const instructions = String(j.instructions || '').trim().slice(0, MAX_PROMPT);   // ponytail: hard cut, coach is told the limit
+  return { base: +j.base, instructions, why: String(j.why || '').slice(0, 200) };
+}
+
+// The next ball waits for this (see resetBall), so every new ball is played by the coach's latest prompt.
+function runCoach() {
+  if (coach.busy || !running || !cfg.useCoach) return;
+  coach.busy = performance.now();
+  coach.p = coachCall();
+}
+
+async function coachCall() {
+  coach.error = '';
+  try {
+    const headers = { Authorization: 'Bearer ' + (cfg.coachKey || cfg.key), 'Content-Type': 'application/json' };
+    if (cfg.coachHeader) headers[cfg.coachHeader] = cfg.coachHeaderValue;
+    const r = await post((cfg.coachUrl || cfg.url).replace(/\/+$/, '') + '/chat/completions', { method: 'POST', headers,
+      body: JSON.stringify({ model: cfg.coach, messages: [{ role: 'user', content: coachPrompt() }] }) }, COACH_TIMEOUT_MS);
+    coach.tokens += r.tokens; coach.calls++;
+    const c = parseCoach(r.json?.choices?.[0]?.message?.content || '');
+    if (c.instructions) { prompts.list.push(newVersion(c.instructions, c.base, c.why)); prompts.cur = prompts.list.length - 1; }
+    else { prompts.cur = c.base; prompts.list[c.base].why += ` / ${clock(Date.now())} switched back: ${c.why}`; }
+    coach.result = c.instructions ? `wrote v${prompts.cur}` : `switched back to v${c.base} unchanged`;
+    savePrompts();
+  } catch (e) { coach.error = e.message; coach.result = 'failed, kept v' + prompts.cur; }
+  coach.busy = 0;
+}
+
+function coachStatus() {
+  if (!cfg.useCoach) return 'off (tick "Use a coach" in Settings)';
+  if (coach.busy) return `${cfg.coach} is rewriting the prompt… ${((performance.now() - coach.busy) / 1000).toFixed(1)} s`;
+  return `${cfg.coach}, rewrites after each miss.${coach.result ? ` Last call: ${coach.result}.` : ''} ${coach.calls} calls, ${coach.tokens} tokens this session, ${prompts.descents.length} falls stored` +
+    (prompts.dropped ? ` (${prompts.dropped} oldest dropped, storage full)` : '') + (coach.error ? `. Last error: ${coach.error}` : '');
 }
 
 const logLine = e => {
   const conf = e.confidence == null ? '  ?' : String(Math.round(e.confidence * 100)).padStart(3) + '%';
   const res = e.truth == null ? '' : `  truth z${e.truth} ${e.diff === 0 ? '✓' : e.diff === 1 ? '≈' : '✗'}`;
-  return `#${String(e.n).padEnd(4)} ${String(Math.round(e.ms)).padStart(5)} ms  ${e.choice} ${conf}${res}`;
+  return `#${String(e.n).padEnd(4)} v${e.v ?? 0} ${String(Math.round(e.ms)).padStart(5)} ms  ${e.choice} ${conf}${res}`;
 };
 
 const fmt = ms => ms == null ? '—' : Math.round(ms) + ' ms';
@@ -624,7 +771,7 @@ const HUD_ROWS = [
   ['min / max', () => `${fmt(quant(stats.lat, 0))} / ${fmt(quant(stats.lat, 1))}`],
   ['time to spare', () => stats.spare == null ? '—' : `${fmt(stats.spare)} between last answer and ball crossing`],
   ['too late', () => `${stats.late} answers arrived after the ball crossed`],
-  ['last answer', () => stats.last ? logLine(stats.last).slice(6).trim() : '—'],
+  ['last answer', () => stats.last ? logLine(stats.last).replace(/^#\S+\s+/, '') : '—'],
   ['accuracy', () => `${pct(stats.correct, stats.graded)} exact, ${pct(stats.near, stats.graded)} within ±1 zone (n=${stats.graded})`],
   ...BANDS.map(([k, max]) => [`· ${k} ${max === Infinity ? '>200' : '<' + max}px`, () => {
     const b = stats.bands[k];
@@ -653,6 +800,10 @@ const bars = ZONE_IDS.map(z => {
   return d;
 });
 
+const clock = t => new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+// Only touch the DOM on change, so text in the HUD can be selected and copied.
+const setText = (id, s) => { if ($(id).textContent !== s) $(id).textContent = s; };
+
 function hud() {
   HUD_ROWS.forEach(([, fn], i) => { hudCells[i].textContent = fn(); });
   const l = stats.last;
@@ -662,6 +813,11 @@ function hud() {
     d.classList.toggle('truth', l?.truth === i);
   });
   $('log').textContent = stats.log.map(logLine).join('\n');
+  $('coachStatus').textContent = coachStatus();
+  const p = prompts.list[prompts.cur];
+  setText('promptText', `v${prompts.cur}${p.at ? ' · ' + clock(p.at) : ''}: ${p.instructions}`);
+  setText('versions', prompts.list.map((p, i) => `${i === prompts.cur ? '▶' : ' '} v${i}${p.parent == null ? '' : ' ← v' + p.parent}` +
+    `${p.at ? ' · ' + clock(p.at) : ''}  ${vStats(p)}\n  Why: ${p.why}\n  ${p.instructions}`).reverse().join('\n\n'));
   $('again').hidden = !game.over;
 }
 
@@ -700,6 +856,7 @@ function draw() {
   ctx.font = '14px monospace';
   ctx.fillText(`score ${g.score}`, 8, 22);
   ctx.fillText(`lives ${g.lives}`, W - 80, 22);
+  if (g.launchAt === Infinity && !g.over) { ctx.textAlign = 'center'; ctx.fillText('Coach is rewriting the prompt…', W / 2, H / 2 + 40); ctx.textAlign = 'start'; }
   if (g.over) { ctx.font = '28px monospace'; ctx.textAlign = 'center'; ctx.fillText('GAME OVER', W / 2, H / 2 + 40); ctx.textAlign = 'start'; }
 }
 
@@ -730,7 +887,7 @@ function start() {
 function stop() {
   running = false; loopId++; inflightSince = 0; backoffUntil = 0;
   $('game').hidden = true; $('setup').hidden = false;
-  $('key-notice').before($('musicBox'));
+  $('coachToggle').before($('musicBox'));
   syncAudio();
 }
 
@@ -753,23 +910,25 @@ const syncModelList = () => {
   else $('model').removeAttribute('list');
 };
 function fillForm(c) {
-  for (const k of ['url', 'key', 'model', 'style', 'music']) $(k).value = c[k];
+  for (const k of ['url', 'key', 'model', 'coach', 'coachUrl', 'coachKey', 'coachHeader', 'coachHeaderValue', 'style', 'music']) $(k).value = c[k];
+  $('useCoach').checked = c.useCoach;
   music.style = $('music').value;
   syncModelList();
 }
-const readForm = () => ({ url: $('url').value.trim(), key: $('key').value.trim(), model: $('model').value.trim(), style: $('style').value, music: $('music').value });
+const readForm = () => ({ url: $('url').value.trim(), key: $('key').value.trim(), model: $('model').value.trim(), useCoach: $('useCoach').checked, coach: $('coach').value.trim(), coachUrl: $('coachUrl').value.trim(), coachKey: $('coachKey').value.trim(), coachHeader: $('coachHeader').value.trim(), coachHeaderValue: $('coachHeaderValue').value.trim(), style: $('style').value, music: $('music').value });
 const msg = t => { $('setupMsg').textContent = t; };
 
 $('url').oninput = syncModelList;
 // Requesty's /systemone rejects the jev-latest alias (404), so switch to the pinned version.
 $('style').onchange = e => { if (e.target.value === 'systemone' && $('model').value.trim() === 'typesafe/jev-latest') $('model').value = 'typesafe/jev-1.14.0'; };
 for (const id of ['url', 'key', 'model']) $(id).addEventListener('change', () => autoMusic('settings ready'));
-$('show').onchange = e => { $('key').type = e.target.checked ? 'text' : 'password'; };
+$('show').onchange = e => { $('key').type = $('coachKey').type = $('coachHeaderValue').type = e.target.checked ? 'text' : 'password'; };
 $('forget').onclick = () => {
-  clearConfig(); fillForm({ url: '', key: '', model: '', style: DEFAULTS.style, music: DEFAULTS.music }); msg('');
+  clearConfig(); fillForm({ url: '', key: '', model: '', useCoach: false, coach: '', coachUrl: '', coachKey: '', coachHeader: '', coachHeaderValue: '', style: DEFAULTS.style, music: DEFAULTS.music }); msg('');
   music.track = music.next = null;
 };
 $('settings').onclick = stop;
+$('resetPrompts').onclick = () => { if (confirm('Delete all coached prompt versions and their play history, and go back to the original prompt?')) { localStorage.removeItem(PROMPTS_KEY); prompts = loadPrompts(); } };
 function setMusicDetail(expanded) {
   $('gameMusic').classList.toggle('music-expanded', expanded);
   $('musicDetail').setAttribute('aria-expanded', expanded);
@@ -794,6 +953,10 @@ $('form').onsubmit = async e => {
   e.preventDefault();
   const c = readForm();
   if (!/^https?:\/\/[^/]/i.test(c.url)) return msg('API URL must start with https:// or http://');
+  if (c.useCoach && !c.coach) return msg('Enter a coach model, or untick "Use a coach".');
+  if (c.useCoach && c.coachUrl && !/^https?:\/\/[^/]/i.test(c.coachUrl)) return msg('Coach API URL must start with https:// or http://');
+  if (c.useCoach && c.coachHeaderValue && !c.coachHeader) return msg('Enter the custom header name, or clear its value.');
+  if (c.useCoach && c.coachHeader && !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(c.coachHeader)) return msg('Custom header name may only use letters, digits and - _ . etc., no spaces or colons.');
   saveConfig(c); cfg = c;
   $('play').disabled = true; msg('Testing one decision call…');
   try {
@@ -825,10 +988,26 @@ if (new URLSearchParams(location.search).has('test')) {
   let threw = false; try { readAnswer('openai', { choices: [{ message: { content: '{}' } }] }); } catch { threw = true; }
   t(threw, 'readAnswer throws on missing zone');
   t(Object.keys(SAMPLE_STATE).join() === 'ball,paddle,field' && !JSON.stringify(SAMPLE_STATE).match(/cross|predict|slope|time/), 'state has no precomputed hints');
-  game = { pending: [], crossed: false };
-  game.pending.push(record({ choice: 'z1', probabilities: { z1: 1 }, ms: 100, tokens: 0 }, 90, SAMPLE_STATE));
-  score(100);
+  const savedPrompts = localStorage.getItem(PROMPTS_KEY);
+  prompts = { list: [newVersion('a'), newVersion('b', 0, 'x')], cur: 1, descents: [], dropped: 0 };
+  game = { pending: [], crossed: false, paddle: { x: 95 }, fallStart: { score: 10, lives: 3, bricks: 39, paddle: 240 } };
+  game.pending.push(record({ choice: 'z1', probabilities: { z1: 1 }, ms: 100, tokens: 0, v: 1 }, 90, SAMPLE_STATE));
+  score(100, true);
   t(stats.graded === 1 && stats.correct === 1 && stats.reach === 1 && stats.last.truth === 1 && game.crossed, 'grading after crossing');
+  t(prompts.list[1].n === 1 && prompts.list[1].correct === 1 && prompts.list[0].n === 0, 'grading per prompt version');
+  const ds = prompts.descents[0];
+  t(prompts.descents.length === 1 && ds.v === 1 && ds.caught && ds.x === 100 && ds.px === 95 && ds.d[0].join() === '1,312,140,90,120,200,z1,0' && prompts.list[1].caught === 1, 'descent recorded');
+  cfg = c0;
+  const cp = coachPrompt();
+  t(cp.includes('=== v1 (in use), built on v0') && cp.includes('score 10, lives 3, bricks 39, paddle starts x=240 | 312,140,90,120 p200→z1 0% | crossed x=100 (z1), paddle x=95 → CAUGHT'), 'coach prompt has full history');
+  cfg = undefined;
+  t(JSON.parse(buildRequest('openai', c0, SAMPLE_STATE).init.body).response_format.questions.zone.instructions === 'b', 'request uses current version');
+  const pc = parseCoach('Sure: {"base": 0, "instructions": "' + 'x'.repeat(2000) + '", "why": "w"}');
+  t(pc.base === 0 && pc.instructions.length === MAX_PROMPT && pc.why === 'w', 'parseCoach');
+  threw = false; try { parseCoach('{"base": 9, "instructions": ""}'); } catch { threw = true; }
+  t(threw, 'parseCoach rejects unknown base');
+  savedPrompts == null ? localStorage.removeItem(PROMPTS_KEY) : localStorage.setItem(PROMPTS_KEY, savedPrompts);
+  prompts = loadPrompts();
   stats = newStats(); game = undefined;
   t(aimX({ choice: 'z1', probabilities: { z1: 0.5, z2: 0.5 } }) === 120, 'aimX weighted');
   t(aimX({ choice: 'z3', probabilities: {} }) === 210, 'aimX falls back to choice');

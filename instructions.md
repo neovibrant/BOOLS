@@ -205,6 +205,31 @@ The setup screen is shown first. **The game stays hidden until a test call succe
   - After each crossing, the zone where the ball actually crossed gets a green outline, and a green marker shows the exact x. Both fade out over 2 s. They're drawn only after the crossing, so the game still predicts nothing.
 - Hits and misses, score and lives, tokens, errors and the last error.
 - The last 12 decisions.
+### Coach (System 2 teaching System 1)
+
+- **Use a coach** checkbox on the settings screen. It's unchecked by default; checking it expands:
+  - **Coach API URL** and **Coach API key**. If they're empty, the coach uses the main URL and key.
+  - **Coach model**: a normal chat LLM, required, with no suggestions.
+  - **Custom header name and value** (optional): an extra auth header sent only to the coach. The server must allow it in `Access-Control-Allow-Headers`. A hosted page calling `localhost` may also need `Access-Control-Allow-Private-Network: true`.
+  - The coach always uses the OpenAI-compatible `/chat/completions` format.
+- **Every fall is recorded** in `bools.prompts.descents`:
+  - The play context: score, lives, bricks left and the paddle x at the start.
+  - Every decision: ball x, y, vx, vy, the paddle x when asked, the choice and the confidence, each tagged with its prompt version.
+  - The crossing x, the paddle x at the crossing, and whether it was caught or missed.
+- **The coach is called on every miss, and the next ball waits for it.** The canvas shows "Coach is rewriting the prompt…", and the ball relaunches 1 s after the coach answers or fails. So every ball is played by the latest prompt. The game has 5 lives.
+- History is kept across games and reloads, so each call sees every game played in this browser since the last reset. It gets the physics rules, the answer latency and paddle speed, and every version with its totals, reason and full fall history. It's told that a miss can come from a late answer or a paddle too far away, not only from a wrong zone. It replies with `{base, instructions, why}`:
+  - It can build a new version on any earlier version.
+  - Or it can return empty instructions to switch back to `base` unchanged.
+- **Only the question's `instructions` change.** The zones and the state stay fixed, so the no-hints rule holds. Prompts are capped at 1,500 characters.
+- **Each answer is graded against the version that produced it.**
+- **The HUD shows:**
+  - The prompt in use.
+  - An **All prompt versions** section, collapsed by default, with the newest first. Each version shows when it was created, its parent, its accuracy, the coach's reason and its full text.
+  - The coach's last result: wrote a new version, switched back, or failed.
+- Versions and history are saved in `localStorage` under `bools.prompts`. That's about 5 MB, roughly 5 hours of play. When it's full, the oldest 10% of falls are dropped and the HUD says so. **Reset to original prompt** clears versions and history.
+- **Cost:** the whole history is sent on every miss, so each coach call grows over time. That's roughly 25 tokens per decision stored, or about 100k tokens after an hour of play.
+- The point is the story and showing the limits of System One: small n is noisy, and the coach may not beat v0.
+
 ### Music
 
 The same model composes the soundtrack, live, as you play. It's a second showcase: one call answers 24–48 typed questions, one per melody note.
