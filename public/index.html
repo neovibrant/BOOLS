@@ -43,7 +43,21 @@
       <input id="key" type="password" autocomplete="off" spellcheck="false">
       <label class="row"><input type="checkbox" id="show"> Show</label>
     </div>
-    <label>Model <input id="model" required></label>
+    <label>Model <input id="model" required autocomplete="off"></label>
+    <datalist id="requestyModels">
+      <option value="typesafe/jev-latest">
+      <option value="typesafe/jev-1.14.0">
+      <option value="typesafe/jev-1.13.0">
+      <option value="cloudflare/clef-flash">
+      <option value="cloudflare/clef">
+      <option value="melious/clef-flash">
+      <option value="melious/clef">
+      <option value="sference/clef">
+      <option value="perplexity/pplx-decider-v1-27b">
+      <option value="azure/decision-1">
+      <option value="azure/decision-1@francecentral">
+      <option value="azure/decision-1@swedencentral">
+    </datalist>
     <label>Style
       <select id="style">
         <option value="openai">OpenAI-compatible (Requesty, etc.)</option>
@@ -414,10 +428,16 @@ function stop() {
   $('game').hidden = true; $('setup').hidden = false;
 }
 
-function fillForm(c) { for (const k of ['url', 'key', 'model', 'style']) $(k).value = c[k]; }
+// Suggest Requesty's decision models only when the URL points at Requesty; typing anything else still works.
+const syncModelList = () => {
+  if (/^https:\/\/router\.requesty\.ai\/v1\/?$/i.test($('url').value.trim())) $('model').setAttribute('list', 'requestyModels');
+  else $('model').removeAttribute('list');
+};
+function fillForm(c) { for (const k of ['url', 'key', 'model', 'style']) $(k).value = c[k]; syncModelList(); }
 const readForm = () => ({ url: $('url').value.trim(), key: $('key').value.trim(), model: $('model').value.trim(), style: $('style').value });
 const msg = t => { $('setupMsg').textContent = t; };
 
+$('url').oninput = syncModelList;
 $('show').onchange = e => { $('key').type = e.target.checked ? 'text' : 'password'; };
 $('forget').onclick = () => { clearConfig(); fillForm({ url: '', key: '', model: '', style: DEFAULTS.style }); msg(''); };
 $('settings').onclick = stop;

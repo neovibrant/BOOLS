@@ -57,7 +57,7 @@ The point it makes: a model that *returns a typed choice* instead of *generating
 ```
 public/index.html             # the entire app: setup form, game, API client (plain JS, no build step)
 wrangler.jsonc                # static-assets Worker config
-.github/workflows/deploy.yml  # deploys on push to main
+.github/workflows/deploy.yml  # manual deploy (Actions → Deploy → Run workflow)
 instructions.md               # this document
 ```
 
@@ -72,7 +72,7 @@ instructions.md               # this document
 }
 ```
 
-- **Deploy:** every push to `main` runs the GitHub Action, which runs `wrangler deploy`. It can also be run by hand from the Actions tab.
+- **Deploy:** manual only. Run the GitHub Action from **Actions → Deploy → Run workflow**; it runs `wrangler deploy`. Pushes don't deploy.
   - It needs two secrets in the GitHub environment `prod`: `CLOUDFLARE_API_TOKEN` (Edit Cloudflare Workers template, limited to the account and the `iteratory.com` zone) and `CLOUDFLARE_ACCOUNT_ID`.
 - The site is served at `https://bools.iteratory.com` and at `bools.<account>.workers.dev`. Wrangler creates the DNS record and certificate.
 - To run locally, run `npx wrangler dev` or open `public/index.html` from any static server.

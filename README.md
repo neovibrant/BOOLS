@@ -30,6 +30,6 @@ Cost: about 400 input tokens per decision, a few decisions per second while the 
 - Everything is in `public/index.html`: plain JS, no build step, no dependencies.
 - Run locally with `npx wrangler dev`, or any static server.
 - Open `index.html?test` for the self-check. It prints PASS or FAIL in the console.
-- Pushes to `main` deploy to Cloudflare through `.github/workflows/deploy.yml`. It needs the GitHub environment `prod` with secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+- Deploy by hand: GitHub → **Actions → Deploy → Run workflow** (`.github/workflows/deploy.yml`). It needs the GitHub environment `prod` with secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
 
 Full design notes: [instructions.md](instructions.md).
