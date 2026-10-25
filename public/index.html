@@ -198,7 +198,7 @@
 <section id="game" hidden>
   <div>
     <canvas id="cv" width="480" height="480" aria-label="Breakout game played by the model"></canvas>
-    <p class="note">Blue = zone the model chose. The game never predicts the ball; answers are scored after it reaches the paddle row.</p>
+    <p class="note">Blue = zone the model chose. Dashed line = where a catch or miss is decided. Green = where the ball actually crossed it, shown afterwards. The game never predicts the ball.</p>
     <div id="gameMusic" class="row"><button id="again" hidden>Play again</button><button id="settings">Settings</button><button id="musicDetail" aria-expanded="false" aria-controls="musicBox">Show music panel</button></div>
   </div>
   <div id="hud" aria-live="off">
@@ -219,19 +219,22 @@ const ZONE_IDS = Array.from({ length: ZONES }, (_, i) => 'z' + i);
 const BALL_SPEED = 180;      // px/s. Tune this for network latency.
 const PADDLE_SPEED = 360;    // px/s
 const PADDLE_W = 70, PADDLE_H = 10, PADDLE_Y = 440, R = 6;
+const CATCH_Y = PADDLE_Y - R;   // ball centre when its bottom touches the paddle top: where a catch or miss is decided
 const TIMEOUT_MS = 5000, ERROR_BACKOFF_MS = 1000;
 const CFG_KEY = 'bools.config';
 const DEFAULTS = { url: 'https://router.requesty.ai/v1', key: '', model: 'typesafe/jev-latest', style: 'openai', music: 'arcade' };
-// Prompt "v9": the best of 10 variants in a 60-state benchmark on Jev (see instructions.md, "Prompt tuning").
+// Prompt "v10": v9 (best of 10 variants in a 60-state benchmark on Jev) with the catch line and bounce limits
+// matching the game exactly. See instructions.md, "Prompt tuning".
 const QUESTION = {
   type: 'choice',
   instructions: 'Ball x,y is its center (radius 6), velocities are px per second, y grows downward. ' +
-    'Where will the ball center cross the paddle row (y = paddle.y)? The center bounces off the walls at x=6 and x=474 (angle in = angle out).' +
-    ' The ball never leaves the field: a straight-line path that would end past x=480 is mirrored back (crossing at 960 - x), ' +
-    'and one that would end below x=0 is mirrored back (crossing at -x). So never answer z0 or z7 just because the ball is heading toward that wall; ' +
+    'The paddle top is at y=440, so the ball is caught or missed when its center reaches y=434 (paddle.catch_y). ' +
+    'Where will the ball center be when it reaches y=434? The center bounces off the walls at x=6 and x=474 (angle in = angle out).' +
+    ' The ball never leaves the field: a straight-line path that would end past x=474 is mirrored back (ending at 948 - x), ' +
+    'and one that would end below x=6 is mirrored back (ending at 12 - x). So never answer z0 or z7 just because the ball is heading toward that wall; ' +
     'first work out how far past the wall it would go, then reflect.' +
-    ' Example: ball x=400,y=240, vx=120, vy=120 travels 200 px down and 200 px right; it would reach x=600 but bounces off the right wall at 480, so it crosses at 480-(600-480)=360 (z6).' +
-    ' Example: ball x=100,y=340, vx=-60, vy=150 travels 100 px down and 40 px left, crossing at x=60 (z1) with no bounce.',
+    ' Example: ball x=400,y=234, vx=120, vy=120 travels 200 px down to y=434 and 200 px right; it would reach x=600 but bounces off the right wall at 474, so it ends at 474-(600-474)=348 (z5).' +
+    ' Example: ball x=100,y=334, vx=-60, vy=150 travels 100 px down to y=434 and 40 px left, ending at x=60 (z1) with no bounce.',
   criteria: Object.fromEntries(ZONE_IDS.map((z, i) => [z, `x ${i * ZW}-${(i + 1) * ZW}`])),
 };
 
@@ -353,7 +356,7 @@ function step(dt) {
   if (hitBrick()) { b.y -= b.vy * dt; b.vy = -b.vy; }
   if (b.y < R) { b.y = R; b.vy = Math.abs(b.vy); }
 
-  const crossing = b.vy > 0 && y0 + R < PADDLE_Y && b.y + R >= PADDLE_Y;
+  const crossing = b.vy > 0 && y0 < CATCH_Y && b.y >= CATCH_Y;
   if (crossing) score(b.x);
   if (crossing && Math.abs(b.x - p.x) <= PADDLE_W / 2 + R) {
     const a = Math.max(-1, Math.min(1, (b.x - p.x) / (PADDLE_W / 2))) * Math.PI / 3;
@@ -375,7 +378,7 @@ function newDescent() { game.descent++; game.pending = []; game.crossed = false;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const makeState = (b, paddleX) => ({
   ball: { x: Math.round(b.x), y: Math.round(b.y), vx: Math.round(b.vx), vy: Math.round(b.vy), radius: R },
-  paddle: { x: Math.round(paddleX), y: PADDLE_Y, width: PADDLE_W },
+  paddle: { x: Math.round(paddleX), y: PADDLE_Y, width: PADDLE_W, catch_y: CATCH_Y },
   field: { width: W, height: H },
   walls: { left_bounce_x: R, right_bounce_x: W - R },
 });
@@ -585,6 +588,7 @@ function record(r, aim, state) {
 function score(x) {
   const s = stats, truth = zoneOf(x), now = performance.now();
   game.crossed = true;
+  game.lastCross = { x, zone: truth, at: now };   // drawn on the catch line for a moment, after the fact
   if (game.pending.length) s.spare = now - game.pending.at(-1).at;
   for (const e of game.pending) {
     const band = s.bands[e.band];
@@ -679,12 +683,24 @@ function draw() {
   ctx.setTransform(size / W, 0, 0, size / H, 0, 0);
   const g = game, p = g.paddle, b = g.ball;
   ctx.clearRect(0, 0, W, H);
+  // Zone strip just above the catch line, so zones are judged where the game judges them, not at the canvas bottom.
+  const ZT = CATCH_Y - 26;
   ctx.font = '11px monospace';
   for (let i = 0; i < ZONES; i++) {
-    if (i % 2) { ctx.fillStyle = '#161616'; ctx.fillRect(i * ZW, PADDLE_Y - 10, ZW, H - PADDLE_Y + 10); }
-    ctx.fillStyle = '#555'; ctx.fillText('z' + i, i * ZW + 4, H - 6);
+    if (i % 2) { ctx.fillStyle = '#161616'; ctx.fillRect(i * ZW, ZT, ZW, CATCH_Y - ZT); }
+    ctx.fillStyle = '#555'; ctx.fillText('z' + i, i * ZW + 4, ZT + 12);
   }
-  if (g.targetZone != null) { ctx.fillStyle = 'rgba(70,170,255,.3)'; ctx.fillRect(g.targetZone * ZW, PADDLE_Y - 10, ZW, H - PADDLE_Y + 10); }
+  if (g.targetZone != null) { ctx.fillStyle = 'rgba(70,170,255,.3)'; ctx.fillRect(g.targetZone * ZW, ZT, ZW, CATCH_Y - ZT); }
+  ctx.strokeStyle = '#4a5272'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(0, CATCH_Y); ctx.lineTo(W, CATCH_Y); ctx.stroke(); ctx.setLineDash([]);
+  // Where the ball really crossed the catch line (after the fact), shown for 2 s.
+  const lc = g.lastCross, age = lc ? (performance.now() - lc.at) / 2000 : 1;
+  if (age < 1) {
+    ctx.globalAlpha = 1 - age;
+    ctx.strokeStyle = '#4c4'; ctx.lineWidth = 2; ctx.strokeRect(lc.zone * ZW + 1, ZT + 1, ZW - 2, CATCH_Y - ZT - 1);
+    ctx.fillStyle = '#4c4'; ctx.beginPath(); ctx.moveTo(lc.x, CATCH_Y); ctx.lineTo(lc.x - 5, CATCH_Y + 8); ctx.lineTo(lc.x + 5, CATCH_Y + 8); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
   for (const k of g.bricks) { ctx.fillStyle = `hsl(${k.row * 40},70%,55%)`; ctx.fillRect(k.x, k.y, k.w, k.h); }
   ctx.fillStyle = '#eee';
   ctx.fillRect(p.x - PADDLE_W / 2, PADDLE_Y, PADDLE_W, PADDLE_H);

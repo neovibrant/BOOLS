@@ -21,7 +21,7 @@ A Breakout game played live by a **System One decision model**: a model that ans
 
 The key stays in your browser's `localStorage` and is sent only to the API URL you enter. There is no backend.
 
-Cost: about 800 input tokens per decision (about $0.15–0.30 per hour of play on Jev), a few decisions per second while the ball falls. A music track is 5,000–10,000 tokens, once per track. Output is free.
+Cost: about 860 input tokens per decision (about $0.15–0.30 per hour of play on Jev), a few decisions per second while the ball falls. A music track is 5,000–10,000 tokens, once per track. Output is free.
 
 ## Stats on screen
 

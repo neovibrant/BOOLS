@@ -81,12 +81,14 @@ The point it makes: a model that *returns a typed choice* instead of *generating
 | v6 | extra "which wall first?" question | 35% / 43% | | 646 |
 | v7 | mirror rule spelled out ("don't pick z0/z7 just because it's heading there") | 38% / 45% | | 642 |
 | v8 | mirrored ranges inside each zone label | 32% / 43% | | 975 |
-| **v9** | **v1 + v5 + v7 (in use)** | **35–37% / 45–50%** | **43–45% / 65%** | **808** |
+| v9 | v1 + v5 + v7 | 32–37% / 40–50% | 42–45% / 60–68% | 808 |
+| **v10** | **v9 with the catch line made exact (in use)** | **42% / 48–50%** | **43–45% / 62–63%** | **860** |
 
 **Findings:**
 - **Jev's main mistake is choosing the wall the ball is heading toward.** It picked z0 or z7 about 43 times in 60 when the truth was z0 or z7 only 18 times. It reads direction well but not distance or the bounce.
 - **Its confidence barely separates right from wrong:** 0.21 on right answers against 0.16 on wrong ones.
 - **Only v9 helped beyond noise, and only close to the paddle:** reach went from 55–60% to 65%, and ±1 accuracy from 75–77% to 87%. Since the last answer near the paddle decides each catch, that's the one that matters, so v9 is the prompt in use. It costs about 46% more tokens per decision.
+- **v10 fixes a 6 px mismatch.** v9 asked where the ball crosses "the paddle row (y = paddle.y)", i.e. y = 440, but the game decides a catch when the ball's bottom touches the paddle top, so its centre is at y = 434. v10 says this explicitly, sends `paddle.catch_y: 434`, and its mirror rule and examples use the real bounce limits (6 and 474). v10 ties v9 near the paddle and is clearly better over all heights (42% exact against 32–33%, in two runs each), so it's the prompt in use.
 - **Live check with v9** (Jev, about 2.5 minutes): 14 hits and 4 misses; 49% exact and 89% within ±1 zone overall; near the paddle, 13 of 24 exact and 22 of 24 within ±1; p50 236 ms.
 - Other places to find decision models, which users can enter themselves:
   - OpenRouter (Jev 1.13 and 1.14).
@@ -197,6 +199,10 @@ The setup screen is shown first. **The game stays hidden until a test call succe
   - Shown as exact and ±1 zone, overall and by distance (near, mid, far).
   - Also shown: how often the aim was within paddle reach.
   - The real zone's bar turns green.
+- **On the playfield:**
+  - The zone strip and its labels sit just above a dashed **catch line** at y = 434, where every catch or miss is decided. They used to be at the canvas bottom, where a missed ball keeps drifting sideways and gives a misleading picture.
+  - The model's chosen zone is shaded blue.
+  - After each crossing, the zone where the ball actually crossed gets a green outline, and a green marker shows the exact x. Both fade out over 2 s. They're drawn only after the crossing, so the game still predicts nothing.
 - Hits and misses, score and lives, tokens, errors and the last error.
 - The last 12 decisions.
 ### Music
@@ -264,14 +270,14 @@ Headers: `Authorization: Bearer {key}`, `Content-Type: application/json`
   "model": "typesafe/jev-latest",
   "messages": [
     { "role": "user",
-      "content": "{\"ball\":{\"x\":312,\"y\":140,\"vx\":90,\"vy\":120,\"radius\":6},\"paddle\":{\"x\":200,\"y\":440,\"width\":70},\"field\":{\"width\":480,\"height\":480},\"walls\":{\"left_bounce_x\":6,\"right_bounce_x\":474}}" }
+      "content": "{\"ball\":{\"x\":312,\"y\":140,\"vx\":90,\"vy\":120,\"radius\":6},\"paddle\":{\"x\":200,\"y\":440,\"width\":70,\"catch_y\":434},\"field\":{\"width\":480,\"height\":480},\"walls\":{\"left_bounce_x\":6,\"right_bounce_x\":474}}" }
   ],
   "response_format": {
     "type": "questions",
     "questions": {
       "zone": {
         "type": "choice",
-        "instructions": "Ball x,y is its center (radius 6), velocities are px per second, y grows downward. Where will the ball center cross the paddle row (y = paddle.y)? The center bounces off the walls at x=6 and x=474 (angle in = angle out). The ball never leaves the field: … [mirror rule] … Example: … [one bounce and one straight example]",
+        "instructions": "Ball x,y is its center (radius 6), velocities are px per second, y grows downward. The paddle top is at y=440, so the ball is caught or missed when its center reaches y=434 (paddle.catch_y). Where will the ball center be when it reaches y=434? The center bounces off the walls at x=6 and x=474 (angle in = angle out). The ball never leaves the field: … [mirror rule] … Example: … [one bounce and one straight example]",
         "criteria": {
           "z0": "x 0-60", "z1": "x 60-120", "z2": "x 120-180", "z3": "x 180-240",
           "z4": "x 240-300", "z5": "x 300-360", "z6": "x 360-420", "z7": "x 420-480"
@@ -332,8 +338,9 @@ Keep it minimal. There is no framework and no build step.
 - `buildRequest(style, cfg, state)`: returns `{url, init}` for `fetch`.
 - `readAnswer(style, json)`: returns `{choice, confidence, probabilities}` or throws.
 - `decide(state)`: `fetch` with a timeout through `AbortController`. It times the call and updates the HUD.
-- `QUESTION`: the paddle prompt (v9, see "Prompt tuning" in section 2). The full text is in the code.
-- `makeState()`: the rounded state that is sent: ball (with radius), paddle, field and wall bounce limits. Facts only, nothing pre-computed.
+- `QUESTION`: the paddle prompt (v10, see "Prompt tuning" in section 2). The full text is in the code.
+- `CATCH_Y` (434): the ball-centre y where a catch or miss is decided. The prompt, the state (`paddle.catch_y`), the game's crossing check and the drawing all use it.
+- `makeState()`: the rounded state that is sent: ball (with radius), paddle (with `catch_y`), field and wall bounce limits. Facts only, nothing pre-computed.
 - `aimX(answer)`: the paddle target, weighted over the chosen zone and its neighbours.
 - `record()` / `score(x)`: speed stats when an answer arrives; accuracy when the ball crosses the paddle row.
 - `step()` / `draw()`: game physics and rendering.
@@ -346,7 +353,7 @@ Keep it minimal. There is no framework and no build step.
 
 ## 8. Cost
 
-- One decision is about 800 input tokens with the v9 prompt (measured on Jev; it was about 550 before).
+- One decision is about 860 input tokens with the v10 prompt (measured on Jev; it was about 550 with the original prompt).
 - Requests go out only while the ball falls, at 2–5 per second, so roughly 4–7M tokens per hour of play. That's about **$0.15–0.30 per hour** on Jev.
 - Output tokens are free on all of these models.
 - Music: 5,000–10,000 input tokens per 20 s track (≈ $0.0002–0.0004 on Jev), only on the triggers listed in section 5. Music on the settings screen composes one track and loops it.
