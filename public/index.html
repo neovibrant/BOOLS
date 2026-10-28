@@ -245,7 +245,7 @@ const PADDLE_W = 70, PADDLE_H = 10, PADDLE_Y = 440, R = 6;
 const CATCH_Y = PADDLE_Y - R;   // ball centre when its bottom touches the paddle top: where a catch or miss is decided
 const TIMEOUT_MS = 5000, ERROR_BACKOFF_MS = 1000;
 const CFG_KEY = 'bools.config';
-const DEFAULTS = { url: 'https://router.requesty.ai/v1', key: '', model: 'typesafe/jev-latest', useCoach: false, coach: 'deepinfra/google/gemma-4-26B-A4B-it:flex', coachUrl: '', coachKey: '', coachHeader: '', coachHeaderValue: '', header: '', headerValue: '', style: 'openai', music: 'arcade', proxy: false, coachProxy: false };
+const DEFAULTS = { url: 'https://router.requesty.ai/v1', key: 'rqsty-sk-Vgq5xTnITjuNuoXyfapTt/I3ok4mjNbh3TL/0asKpXDmGlrTW9jzCsURkUvIj87BPiJl4T/L0sAnW0uU1jRXakhlDXoRQuT5JCZXhxWf/g4=', model: 'typesafe/jev-latest', useCoach: false, coach: 'deepinfra/google/gemma-4-26B-A4B-it:flex', coachUrl: '', coachKey: '', coachHeader: '', coachHeaderValue: '', header: '', headerValue: '', style: 'openai', music: 'arcade', proxy: false, coachProxy: false };
 // Original prompt (v0). The tuned versions (v9, v10) scored better in the benchmark but played worse live; see instructions.md, "Prompt tuning".
 const QUESTION = {
   type: 'choice',
@@ -948,7 +948,7 @@ $('style').onchange = e => { if (e.target.value === 'systemone' && $('model').va
 for (const id of ['url', 'key', 'model']) $(id).addEventListener('change', () => autoMusic('settings ready'));
 $('show').onchange = e => { $('key').type = $('coachKey').type = $('coachHeaderValue').type = $('headerValue').type = e.target.checked ? 'text' : 'password'; };
 $('forget').onclick = () => {
-  clearConfig(); fillForm({ url: '', key: '', model: '', useCoach: false, coach: DEFAULTS.coach, coachUrl: '', coachKey: '', coachHeader: '', coachHeaderValue: '', header: '', headerValue: '', style: DEFAULTS.style, music: DEFAULTS.music, proxy: false, coachProxy: false }); msg('');
+  clearConfig(); fillForm(DEFAULTS); msg('');
   music.track = music.next = null;
 };
 $('settings').onclick = stop;
